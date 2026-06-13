@@ -22,6 +22,11 @@ export function shq(v: string): string {
   return `'${v.replace(/'/g, `'\\''`)}'`;
 }
 
+/** Session name convention for an agent. The one place this string is built. */
+export function sessionNameFor(agentId: string): string {
+  return `agent-${agentId}`;
+}
+
 export function hasSession(socket: string, name: string): boolean {
   return tmux(socket, ["has-session", "-t", name]).code === 0;
 }

@@ -31,13 +31,23 @@ async function post(path, body) {
   return r.json();
 }
 
-const MODELS = ["default", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"];
 const MODEL_LABEL = { default: "default", "claude-opus-4-8": "Opus 4.8", "claude-sonnet-4-6": "Sonnet 4.6", "claude-haiku-4-5-20251001": "Haiku 4.5" };
+let RUNTIMES = [{ id: "claude", label: "Claude", models: [] }]; // populated from /api/runtimes
+let MAX_CODEX = 2;
+const runtimeDef = (id) => RUNTIMES.find((r) => r.id === (id || "claude")) || RUNTIMES[0];
+// Selectable model ids for an agent = its provider's models (codex advertises none -> just "default").
+const modelsFor = (rt) => ["default", ...(runtimeDef(rt).models || [])];
 
 // ---- write actions (exposed for inline handlers) ----
 window.setModel = async (id, sel) => {
   sel.disabled = true;
   await post(`/api/agents/${id}/model`, { model: sel.value });
+  await refreshAgents();
+};
+window.setRuntime = async (id, sel) => {
+  sel.disabled = true;
+  const r = await post(`/api/agents/${id}/runtime`, { runtime: sel.value });
+  if (r && r.warning) alert(r.warning); // soft guardrail: ChatGPT Plus shared-cap warning past MAX_CODEX
   await refreshAgents();
 };
 window.agentAction = async (id, action) => {
@@ -151,6 +161,13 @@ function taskDesc(x) {
 async function loadAgentsMap() {
   AGENTLIST = await api("/api/agents");
   AGENTS = Object.fromEntries(AGENTLIST.map((a) => [a.id, a]));
+  try {
+    const r = await api("/api/runtimes");
+    if (r && r.runtimes && r.runtimes.length) RUNTIMES = r.runtimes;
+    if (r && r.maxCodexAgents) MAX_CODEX = r.maxCodexAgents;
+  } catch {
+    /* keep the claude-only default if the endpoint is unavailable */
+  }
 }
 
 async function loadOverview() {
@@ -178,10 +195,18 @@ const TABS = {
       <div class="acard">
         <div class="ahead"><span class="aname">${esc(a.displayName)}</span>${stateBadge(a.running ? a.state : "offline")}</div>
         <div class="aid">@${esc(a.id)}</div>
-        <div class="arow"><span class="k">model</span>
-          <select class="msel" onchange="setModel('${esc(a.id)}', this)">
-            ${MODELS.map((mm) => `<option value="${mm}"${a.model === mm ? " selected" : ""}>${esc(MODEL_LABEL[mm] || mm)}</option>`).join("")}
+        <div class="arow"><span class="k">runtime</span>
+          <select class="msel" onchange="setRuntime('${esc(a.id)}', this)">
+            ${RUNTIMES.map((rt) => `<option value="${esc(rt.id)}"${(a.runtime || "claude") === rt.id ? " selected" : ""}>${esc(rt.label)}</option>`).join("")}
           </select></div>
+        <div class="arow"><span class="k">model</span>
+          ${
+            runtimeDef(a.runtime).models.length
+              ? `<select class="msel" onchange="setModel('${esc(a.id)}', this)">
+            ${modelsFor(a.runtime).map((mm) => `<option value="${mm}"${(a.model || "default") === mm ? " selected" : ""}>${esc(MODEL_LABEL[mm] || mm)}</option>`).join("")}
+          </select>`
+              : `<span class="muted">provider default</span>`
+          }</div>
         <div class="arow"><span class="k">profile</span><span>${a.profile === "full" ? "full access" : `<span class="pill warn">${esc(a.profile)}</span>`}</span></div>
         <div class="arow"><span class="k">slack</span><span>${a.slack ? (a.slack.ready ? pill(true, "ready") : pill(false, "no token")) : "—"}</span></div>
         <div class="arow"><span class="k">memories</span><span>${a.memories}</span></div>

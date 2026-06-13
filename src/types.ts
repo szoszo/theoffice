@@ -34,6 +34,16 @@ export interface AgentDef {
   allowFrom?: string[];
   /** security profile name (drives the connector deny-list); default = full access */
   profile?: string;
+  /**
+   * Which terminal-agent runtime drives this agent — the provider id of a registered runtime
+   * (see src/session/runtime.ts). "claude" (Claude Code, the default) and "codex" (OpenAI Codex CLI)
+   * ship today; the registry is provider-pluggable so a future "local"/"gemini" runtime is one module.
+   * Selects the spawn + delivery path ONLY — Slack identity, office-say, memory and inter-agent routing
+   * are model-agnostic and identical across providers. An unset or unknown value resolves to the default
+   * (claude), so existing agents are unaffected. This is the one-line revert flag (agent.json): flip the
+   * provider + restart = instant runtime swap.
+   */
+  runtime?: string;
 }
 
 /** Effective, fully-resolved engine config = deepMerge(platform, product, tenant). */

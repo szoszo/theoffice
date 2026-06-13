@@ -42,7 +42,9 @@ describe("inter-agent bus", () => {
     expect(status).toBe("delivered");
 
     const queuedForRyan = listQueued("ryan");
-    expect(queuedForRyan.some((q) => q.prompt.includes("pull the Q2 lead list") && q.prompt.includes("@jim"))).toBe(true);
+    // wrap() now prefixes "[Message from <sender>]" — the sender's display name when a cfg is available,
+    // else the raw agent id (here "jim", since deliverPendingMessages runs without startBus capturing cfg).
+    expect(queuedForRyan.some((q) => q.prompt.includes("pull the Q2 lead list") && q.prompt.includes("from jim"))).toBe(true);
   });
 
   it("is idempotent — re-running does not double-enqueue", () => {

@@ -1,10 +1,13 @@
 import type { EngineConfig } from "../types.js";
 import { getDb } from "../db/index.js";
 import { enqueueInbound } from "../queue/index.js";
+import { displayNameFor } from "../agents.js";
 import { log } from "../logger.js";
 
 const logger = log("bus");
 const TICK_MS = 3000;
+// Captured at startBus so wrap() can resolve sender display names. Display-only; routing uses the id.
+let busCfg: EngineConfig | null = null;
 
 /** Queue an inter-agent message (an agent delegating to another). */
 export function sendAgentMessage(from: string, to: string, content: string): number {
@@ -22,7 +25,9 @@ interface PendingMsg {
 }
 
 function wrap(m: PendingMsg): string {
-  return `[Message from @${m.from_agent}]: ${m.content}\n\nHandle this and reply on your channel. When finished, mark it done.`;
+  // DISPLAY ONLY: show the sender's human name to the recipient. Routing still uses m.from_agent (the id).
+  const from = busCfg ? displayNameFor(busCfg, m.from_agent) : m.from_agent;
+  return `[Message from ${from}]: ${m.content}\n\nHandle this and reply on your channel. When finished, mark it done.`;
 }
 
 /**
@@ -46,7 +51,8 @@ export function deliverPendingMessages(): number {
   return n;
 }
 
-export function startBus(_cfg: EngineConfig): () => void {
+export function startBus(cfg: EngineConfig): () => void {
+  busCfg = cfg;
   let stopped = false;
   const tick = () => {
     if (stopped) return;

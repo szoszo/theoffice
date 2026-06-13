@@ -16,6 +16,8 @@ import { checkUpdates, applyUpdate } from "./update.js";
 import { sessionNameFor, launchAgent } from "../session/session-manager.js";
 import { hasSession, capturePane, killSession } from "../session/tmux.js";
 import { detectPaneState } from "../session/pane-state.js";
+import { isCodexBusy } from "../session/codex-runtime.js";
+import { isKnownRuntime, listRuntimes, DEFAULT_RUNTIME } from "../session/runtime.js";
 import { getOrCreateToken, checkBearer } from "./auth.js";
 import { log } from "../logger.js";
 
@@ -23,6 +25,9 @@ const logger = log("web");
 const HERE = dirname(fileURLToPath(import.meta.url));
 const UI_DIR = join(HERE, "..", "..", "web-ui");
 const BOOT_MS = Date.now(); // for the "since restart" usage window
+// Soft ceiling for codex agents: the codex runtime shares the owner's single ChatGPT (Plus) usage cap,
+// so more than this many concurrent codex agents will hit the rolling 5h limit and stall. UI warns past it.
+const MAX_CODEX_AGENTS = 2;
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -126,6 +131,12 @@ async function handleApi(
     });
   }
 
+  // GET /api/runtimes — registered providers (id, label, selectable models) for the dashboard flip control,
+  // plus the soft codex ceiling so the UI can warn before the owner blows the shared ChatGPT cap.
+  if (path === "/api/runtimes" && m === "GET") {
+    return json(res, 200, { runtimes: listRuntimes(), maxCodexAgents: MAX_CODEX_AGENTS });
+  }
+
   // GET /api/agents — enriched for the command center (live state, model, profile, memory count)
   if (path === "/api/agents" && m === "GET") {
     const counts = Object.fromEntries(
@@ -136,8 +147,14 @@ async function handleApi(
       const running = hasSession(cfg.tmux.socket, session);
       let state = "offline";
       if (running) {
-        const pane = capturePane(cfg.tmux.socket, session);
-        state = pane ? detectPaneState(pane) : "unknown";
+        if (a.runtime === "codex") {
+          // codex agents run an idle tmux HOLDER (not a Claude TUI), so pane-state can't classify them.
+          // Liveness comes from the exec tracker instead: a turn in flight = busy, otherwise idle.
+          state = isCodexBusy(a.id) ? "busy" : "idle";
+        } else {
+          const pane = capturePane(cfg.tmux.socket, session);
+          state = pane ? detectPaneState(pane) : "unknown";
+        }
       }
       return {
         id: a.id,
@@ -145,6 +162,7 @@ async function handleApi(
         enabled: a.enabled,
         model: a.model ?? "default",
         profile: a.profile ?? "full",
+        runtime: a.runtime ?? "claude",
         running,
         state,
         slack: a.slack ? { ready: !!(a.slack.appToken && a.slack.botToken), botUserId: a.slack.botUserId ?? null } : null,
@@ -291,7 +309,7 @@ async function handleApi(
   }
 
   // --- agent control (write) : /api/agents/<id>/<action> ---
-  const am = path.match(/^\/api\/agents\/([A-Za-z0-9_-]+)\/(model|enabled|restart|start|stop)$/);
+  const am = path.match(/^\/api\/agents\/([A-Za-z0-9_-]+)\/(model|runtime|enabled|restart|start|stop)$/);
   if (am && m === "POST") {
     const id = am[1]!, action = am[2]!;
     const agent = loadAgents(cfg).find((a) => a.id === id);
@@ -328,6 +346,31 @@ async function handleApi(
       killSession(cfg.tmux.socket, session); // restart so the new --model takes effect
       relaunch();
       return json(res, 200, { ok: true, model: mv });
+    }
+    if (action === "runtime") {
+      // Flip the provider that drives this agent (claude / codex / ...). Optional `model` in the same
+      // body lets the UI swap runtime + model atomically (one restart). Unknown providers default-resolve
+      // to claude on load, but we reject them here so a typo can't silently no-op.
+      const rv = typeof body.runtime === "string" ? body.runtime : DEFAULT_RUNTIME;
+      if (!isKnownRuntime(rv)) return json(res, 400, { error: "unknown runtime", runtime: rv });
+      if (rv === DEFAULT_RUNTIME) delete meta.runtime; // keep agent.json clean + preserve revert semantics
+      else meta.runtime = rv;
+      if (typeof body.model === "string") {
+        if (body.model && body.model !== "default") meta.model = body.model;
+        else delete meta.model;
+      }
+      writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+      // GUARDRAIL (ChatGPT Plus, no Pro): the codex runtime shares the owner's single ChatGPT usage cap,
+      // so >2 concurrent codex agents will hit the 5h limit and stall the fleet. Soft-warn (never block) so
+      // the switch can't trap the owner — just surfaces the risk in the UI when the ceiling is crossed.
+      const codexCount = loadAgents(cfg).filter((a) => a.runtime === "codex").length;
+      const warning =
+        rv === "codex" && codexCount > MAX_CODEX_AGENTS
+          ? `${codexCount} agents now on codex. ChatGPT Plus shares one usage cap — >${MAX_CODEX_AGENTS} concurrent codex agents will hit the 5h limit and stall. Consider keeping it to ${MAX_CODEX_AGENTS}.`
+          : undefined;
+      killSession(cfg.tmux.socket, session); // restart so the new runtime path takes effect
+      relaunch();
+      return json(res, 200, { ok: true, runtime: rv, model: meta.model ?? "default", codexCount, warning });
     }
     if (action === "enabled") {
       meta.enabled = !!body.enabled;

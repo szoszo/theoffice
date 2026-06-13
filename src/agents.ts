@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentDef, EngineConfig } from "./types.js";
 import { log } from "./logger.js";
+import { DEFAULT_RUNTIME, isKnownRuntime } from "./session/runtime.js";
 
 const logger = log("agents");
 
@@ -12,6 +13,7 @@ interface AgentMeta {
   slack?: { botUserId?: string };
   allowFrom?: string[];
   profile?: string;
+  runtime?: string;
 }
 
 interface SlackSecret {
@@ -51,6 +53,8 @@ export function loadAgents(cfg: EngineConfig): AgentDef[] {
         : undefined,
       allowFrom: meta.allowFrom,
       profile: meta.profile,
+      // normalize against the runtime registry: unknown/unset resolves to the default (safe revert semantics)
+      runtime: isKnownRuntime(meta.runtime) ? meta.runtime : DEFAULT_RUNTIME,
     });
   }
   return out;
@@ -59,6 +63,18 @@ export function loadAgents(cfg: EngineConfig): AgentDef[] {
 /** Agents that have a usable Slack identity (can ingest + reply). */
 export function slackAgents(agents: AgentDef[]): AgentDef[] {
   return agents.filter((a) => a.enabled && a.slack?.appToken && a.slack?.botToken);
+}
+
+/**
+ * Resolve an agent id to its human displayName (from tenant/agents/<id>/agent.json),
+ * falling back to the raw id when unset/blank. DISPLAY ONLY — never use this where the id
+ * is a routing key. Read fresh each call so removing/blanking displayName reverts to the id
+ * with no restart (reversibility).
+ */
+export function displayNameFor(cfg: EngineConfig, id: string): string {
+  const meta = readJson<AgentMeta>(join(cfg.paths.agentsDir, id, "agent.json"));
+  const name = meta?.displayName?.trim();
+  return name ? name : id;
 }
 
 function readJson<T>(path: string): T | undefined {

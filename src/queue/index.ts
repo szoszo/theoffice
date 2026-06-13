@@ -69,6 +69,17 @@ export function requeue(id: number): void {
   getDb().prepare(`UPDATE inbound_queue SET status='queued' WHERE id=?`).run(id);
 }
 
+/**
+ * Re-queue WITHOUT charging an attempt (refunds the +1 that markDelivering added).
+ * For transient external limits that are not the message's fault — e.g. a ChatGPT
+ * usage cap on a codex-runtime agent — so a cap window never burns the failure budget.
+ */
+export function requeueNoPenalty(id: number): void {
+  getDb()
+    .prepare(`UPDATE inbound_queue SET status='queued', attempts=MAX(0, attempts-1) WHERE id=?`)
+    .run(id);
+}
+
 export function markFailed(id: number, err: string): void {
   getDb().prepare(`UPDATE inbound_queue SET status='failed', last_error=? WHERE id=?`).run(err, id);
 }
