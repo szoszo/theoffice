@@ -30,8 +30,12 @@ const MAX_DELIVERY_ATTEMPTS = 5; // give up + mark failed after this many
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-// Agents primed with their recalled memory this engine run (see deliverClaude). Resets on restart.
-const primed = new Set<string>();
+// Agents whose tmux session was just (re)created and still needs its memory preamble on the next
+// delivery (see launchClaude + deliverClaude). Keyed to SESSION freshness, NOT engine lifetime: our
+// sessions are decoupled from the engine (theoffice-tmux, separate cgroup), so an engine restart leaves
+// live sessions untouched and must NOT re-prime them, while a dashboard-restarted agent (genuinely fresh
+// session) MUST be primed. launchClaude adds an id only when it actually creates a new session.
+const needsPrime = new Set<string>();
 
 /**
  * Record where an agent should reply for a channel-sourced message. The `office-say`
@@ -133,6 +137,10 @@ function launchClaude(cfg: EngineConfig, agent: AgentDef): boolean {
   // does NOT bypass that prompt). Idempotent.
   ensureFolderTrusted(agent.dir);
   const ok = newSession(cfg.tmux.socket, session, { cwd: agent.dir, command, env });
+  // Only a genuinely NEW session needs priming. ok=false means the session already existed (e.g. an
+  // engine restart while the decoupled tmux server kept it alive) — it already holds its context, so we
+  // must NOT re-prime it. A dashboard restart (killSession then here) yields ok=true -> primes the fresh one.
+  if (ok) needsPrime.add(agent.id);
   logger.info({ agent: agent.id, session, ok }, ok ? "launched agent" : "launch skipped (exists?)");
   return ok;
 }
@@ -150,12 +158,13 @@ async function deliverClaude(cfg: EngineConfig, agent: AgentDef, item: QueuedIte
     writeReplyContext(cfg, item.agent_id, item.reply_channel);
   }
   markDelivering(item.id);
-  // First message delivered to each agent this engine run gets a recalled-memory preamble
-  // (hot+warm always, cold/shared by topic) so a fresh session doesn't start blank; later
-  // messages skip it because the live session still holds the context. `primed` resets on
-  // engine restart — exactly when a "new session" effectively begins — so it re-primes.
+  // The first message to a FRESHLY-CREATED session gets a recalled-memory preamble (bounded; hot+warm
+  // first, then topical cold/shared) so a blank session doesn't start contextless; later messages skip it
+  // because the live session still holds the context. `needsPrime` is set by launchClaude only when it
+  // actually creates a new session, so this fires on reboot/dashboard-restart but NOT on an engine restart
+  // that left the session alive.
   let text = wrapForDelivery(item.source, item.prompt);
-  const prime = !primed.has(item.agent_id);
+  const prime = needsPrime.has(item.agent_id);
   if (prime) {
     try {
       const mem = recallForPrompt(item.agent_id, item.prompt);
@@ -166,7 +175,7 @@ async function deliverClaude(cfg: EngineConfig, agent: AgentDef, item: QueuedIte
   }
   const res = await deliverPrompt(socket, session, text);
   if (res.ok) {
-    primed.add(item.agent_id);
+    needsPrime.delete(item.agent_id);
     markDelivered(item.id);
     recordInbound(item.agent_id, item.reply_channel, item.prompt);
     logger.info({ id: item.id, agent: item.agent_id, source: item.source, primed: prime }, "delivered");
