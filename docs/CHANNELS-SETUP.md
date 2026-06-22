@@ -4,6 +4,46 @@ Each agent is its own Slack bot, so the owner can DM **@Charly** (CFO) or **@Len
 (Logistics) directly and get a reply *as that colleague*. One ingest daemon owns
 exactly one Socket-Mode connection per agent-app, so there is no event-splitting.
 
+## Two entry paths: DM and channel @-mention
+
+The ingest accepts a human message on two paths (`src/channel/slack-ingest.ts`):
+
+- **DM** — a `message` event with `channel_type: "im"`. The agent replies to
+  *everything* you DM it. This is the original behaviour.
+- **Channel @-mention** — an `app_mention` event. In a shared channel an agent
+  reacts **only when it is explicitly @-mentioned** (so it never jumps into
+  unrelated chatter). The leading `<@BOT>` / `<@BOT|label>` is stripped before the
+  text reaches the agent, and the reply goes **back to the channel** (the reply
+  channel is the channel id, so `office-say` posts there, not into a DM).
+
+> A *plain* (non-mention) channel message is still ignored on purpose, even if the
+> app later gains `channels:history` — channels are reached exclusively through
+> `app_mention`. Replies are channel-level in v1, not threaded.
+
+### To turn channel mentions on for an agent (owner, per Slack app)
+
+1. **OAuth & Permissions** → Bot Token Scopes → add `app_mentions:read`.
+2. **Event Subscriptions** → Subscribe to bot events → add `app_mention`.
+3. **Reinstall to Workspace** (scope change requires it). If a new `xoxb-…` token
+   is issued, update `tenant/secrets/slack/<id>.json`.
+4. In the target channel, invite the bot: `/invite @AgentName`. A bot that is not a
+   member of the channel receives **no** `app_mention` events.
+
+### Verify
+
+```
+# scopes actually granted to the bot token (look for app_mentions:read)
+curl -sD - -o /dev/null -XPOST https://slack.com/api/auth.test \
+  -H "Authorization: Bearer $(node -e 'console.log(require("./tenant/secrets/slack/<id>.json").botToken)')" | grep -i x-oauth-scopes
+
+# channels the bot is a member of
+curl -s -XPOST 'https://slack.com/api/users.conversations?types=public_channel,private_channel' \
+  -H "Authorization: Bearer <xoxb>"
+```
+
+Then `@AgentName hello` in the channel → the engine log shows
+`inbound channel mention enqueued` and the agent replies in the channel.
+
 ## Per agent (one Slack app each)
 
 1. Create a Slack app (https://api.slack.com/apps → From scratch), name it like the
@@ -36,10 +76,10 @@ the owner can't DM the agent.
     "bot_user": { "display_name": "Michael Scott", "always_online": true }
   },
   "oauth_config": {
-    "scopes": { "bot": ["chat:write", "im:history", "im:read", "im:write", "users:read", "files:read", "files:write"] }
+    "scopes": { "bot": ["chat:write", "im:history", "im:read", "im:write", "users:read", "files:read", "files:write", "app_mentions:read"] }
   },
   "settings": {
-    "event_subscriptions": { "bot_events": ["message.im"] },
+    "event_subscriptions": { "bot_events": ["message.im", "app_mention"] },
     "interactivity": { "is_enabled": false },
     "org_deploy_enabled": false,
     "socket_mode_enabled": true,

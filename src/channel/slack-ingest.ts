@@ -49,24 +49,40 @@ function parseFiles(raw: unknown): SlackFile[] {
   return out;
 }
 
+/** Strip every `<@BOTID>` / `<@BOTID|label>` mention of this bot, then collapse the whitespace it left. */
+function stripMention(text: string, selfBotUserId?: string): string {
+  if (!selfBotUserId) return text.trim();
+  return text
+    .replace(new RegExp(`<@${selfBotUserId}(\\|[^>]*)?>`, "g"), " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /**
- * Pure inbound parser (testable without Slack). Accepts real human messages —
- * DMs or channel posts, including ones that carry file attachments (subtype
- * "file_share") — and rejects anything from a bot (incl. the agent's own echoes),
- * edits, joins, and messages with neither text nor files.
+ * Pure inbound parser (testable without Slack). Accepts real human messages on two
+ * entry paths:
+ *   - DMs: a `message` event with channel_type "im" (respond to everything).
+ *   - Channels: an `app_mention` event (respond only when the bot is @-mentioned),
+ *     so agents never react to unrelated chatter in a shared channel.
+ * Both paths carry file attachments (subtype "file_share"). Rejects anything from a
+ * bot (incl. the agent's own echoes), edits, joins, plain non-DM messages, and
+ * messages with neither text nor files.
  */
 export function parseInbound(event: unknown, selfBotUserId?: string): ParsedInbound | null {
   const e = event as Record<string, unknown> | null;
-  if (!e || e.type !== "message") return null;
+  if (!e) return null;
+  const isMention = e.type === "app_mention";
+  if (e.type !== "message" && !isMention) return null;
   // allow plain messages and file uploads; reject edits / bot_message / joins / ...
   if (e.subtype && e.subtype !== "file_share") return null;
   if (e.bot_id) return null; // any bot, including self
   if (selfBotUserId && e.user === selfBotUserId) return null;
-  // DM-only: the Slack manifest only subscribes to message.im, but enforce it here too so a future scope
-  // widening (e.g. channels:history) can't silently make agents react to public-channel posts. Reject a
-  // present, non-'im' channel_type; tolerate its absence so events that omit it aren't broken.
-  if (typeof e.channel_type === "string" && e.channel_type !== "im") return null;
-  const text = typeof e.text === "string" ? e.text.trim() : "";
+  // DMs stay DM-only: a plain `message` with a present, non-'im' channel_type is rejected so a future scope
+  // widening (e.g. channels:history) can't silently make agents react to public-channel posts. Channels are
+  // reached exclusively through app_mention, which only fires when the bot is explicitly @-mentioned.
+  if (!isMention && typeof e.channel_type === "string" && e.channel_type !== "im") return null;
+  const raw = typeof e.text === "string" ? e.text : "";
+  const text = isMention ? stripMention(raw, selfBotUserId) : raw.trim();
   const files = parseFiles(e.files);
   if (!text && files.length === 0) return null;
   if (typeof e.channel !== "string" || typeof e.user !== "string" || typeof e.ts !== "string") return null;
@@ -122,7 +138,10 @@ export function startSlackIngest(cfg: EngineConfig): () => void {
     // Reuse one Web client per agent for the "seen" 👀 reaction (reactions:write).
     const web = agent.slack!.botToken ? new WebClient(agent.slack!.botToken) : null;
 
-    sm.on("message", async (args: { ack?: () => Promise<void>; event?: unknown; body?: { event?: unknown } }) => {
+    // Shared handler for both entry paths: DMs (`message`) and channel @-mentions
+    // (`app_mention`). The dedup key `slack:<ts>` means that if a single mention ever
+    // arrives on both subscriptions it is enqueued only once.
+    const handle = async (args: { ack?: () => Promise<void>; event?: unknown; body?: { event?: unknown } }) => {
       if (args.ack) {
         try {
           await args.ack();
@@ -133,8 +152,9 @@ export function startSlackIngest(cfg: EngineConfig): () => void {
       const event = args.event ?? args.body?.event;
       const parsed = parseInbound(event, agent.slack!.botUserId);
       if (!parsed) return;
+      const isDm = parsed.channel.startsWith("D");
       if (!isAllowedSender(parsed.user, agent.allowFrom, ownerId)) {
-        logger.warn({ agent: agent.id, from: parsed.user }, "ignored DM from non-allowed user");
+        logger.warn({ agent: agent.id, from: parsed.user, dm: isDm }, "ignored message from non-allowed user");
         return;
       }
       // Instant "I've seen this" feedback so the owner isn't left wondering — react
@@ -154,10 +174,13 @@ export function startSlackIngest(cfg: EngineConfig): () => void {
         dedupKey: `slack:${parsed.ts}`,
       });
       logger.info(
-        { agent: agent.id, enqueued: id != null, files: parsed.files.length },
-        "inbound DM enqueued"
+        { agent: agent.id, enqueued: id != null, dm: isDm, files: parsed.files.length },
+        isDm ? "inbound DM enqueued" : "inbound channel mention enqueued"
       );
-    });
+    };
+
+    sm.on("message", handle);
+    sm.on("app_mention", handle);
 
     sm.start().catch((err: unknown) => logger.error({ agent: agent.id, err }, "socket start failed"));
     clients.push(sm);

@@ -40,9 +40,41 @@ describe("parseInbound", () => {
     expect(parseInbound({ ...dm, subtype: "bot_message" }, "U_charly")).toBeNull();
   });
 
-  it("rejects a non-DM channel_type (DM-only enforced in code, not just the manifest)", () => {
+  it("rejects a plain non-DM channel message (channels enter via app_mention, not message.channels)", () => {
     expect(parseInbound({ ...dm, channel_type: "channel" }, "U_charly")).toBeNull();
     expect(parseInbound({ ...dm, channel_type: "group" }, "U_charly")).toBeNull();
+  });
+
+  it("accepts an app_mention in a channel and strips the leading bot mention", () => {
+    const ev = { type: "app_mention", channel: "C1", user: "U_owner", text: "<@U_charly> hello there", ts: "2.1" };
+    expect(parseInbound(ev, "U_charly")).toEqual({ text: "hello there", channel: "C1", user: "U_owner", ts: "2.1", files: [] });
+  });
+
+  it("strips the bot mention wherever it appears and trims, incl. the <@id|label> form", () => {
+    const ev = { type: "app_mention", channel: "C1", user: "U_owner", text: "hey <@U_charly|charly>  what's up", ts: "2.2" };
+    expect(parseInbound(ev, "U_charly")?.text).toBe("hey what's up");
+  });
+
+  it("accepts an app_mention carrying a file attachment", () => {
+    const ev = {
+      type: "app_mention",
+      channel: "C1",
+      user: "U_owner",
+      text: "<@U_charly> look",
+      ts: "2.3",
+      files: [{ id: "F9", name: "p.png", mimetype: "image/png", url_private: "https://files.slack.com/F9/p.png" }],
+    };
+    const out = parseInbound(ev, "U_charly");
+    expect(out?.text).toBe("look");
+    expect(out?.files).toEqual([{ id: "F9", name: "p.png", mimetype: "image/png", urlPrivateDownload: "https://files.slack.com/F9/p.png" }]);
+  });
+
+  it("rejects an app_mention that is only the mention with no real content", () => {
+    expect(parseInbound({ type: "app_mention", channel: "C1", user: "U_owner", text: "<@U_charly>", ts: "2.4" }, "U_charly")).toBeNull();
+  });
+
+  it("rejects an app_mention from a bot", () => {
+    expect(parseInbound({ type: "app_mention", channel: "C1", user: "U_x", text: "<@U_charly> hi", ts: "2.5", bot_id: "B1" }, "U_charly")).toBeNull();
   });
 
   it("rejects edits / system subtypes", () => {
