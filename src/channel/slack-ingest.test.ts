@@ -91,6 +91,36 @@ describe("parseInbound", () => {
   it("trims text", () => {
     expect(parseInbound({ ...dm, text: "  spaced  " }, "U_charly")?.text).toBe("spaced");
   });
+
+  // Channel @-mention support (PR#11 feature port). RED-FIRST: pre-port parseInbound only knew `message`,
+  // so the app_mention accept fails and a non-"im" channel message was wrongly accepted.
+  it("accepts a channel app_mention and strips the bot's own mention from the text", () => {
+    const ev = { type: "app_mention", channel: "C42", user: "U_owner", text: "<@U_charly> what's the weather", ts: "2.2" };
+    expect(parseInbound(ev, "U_charly")).toEqual({ text: "what's the weather", channel: "C42", user: "U_owner", ts: "2.2", files: [] });
+  });
+
+  it("strips a labelled mention and collapses whitespace", () => {
+    const ev = { type: "app_mention", channel: "C42", user: "U_owner", text: "<@U_charly|charly>   ping ", ts: "2.3" };
+    expect(parseInbound(ev, "U_charly")?.text).toBe("ping");
+  });
+
+  it("ignores an app_mention that is only the bot mention (nothing to answer)", () => {
+    expect(parseInbound({ type: "app_mention", channel: "C42", user: "U_owner", text: "<@U_charly>", ts: "2.4" }, "U_charly")).toBeNull();
+  });
+
+  it("ignores a self app_mention (the bot mentioning itself)", () => {
+    expect(parseInbound({ type: "app_mention", channel: "C42", user: "U_charly", text: "<@U_charly> hi", ts: "2.5" }, "U_charly")).toBeNull();
+  });
+
+  it("DM-only: rejects a channel `message` so it can't double-fire alongside its app_mention", () => {
+    const chanMsg = { type: "message", channel_type: "channel", channel: "C42", user: "U_owner", text: "hello all", ts: "2.6" };
+    expect(parseInbound(chanMsg, "U_charly")).toBeNull();
+  });
+
+  it("still accepts a DM whose channel_type is absent (backward-compatible)", () => {
+    const ev = { type: "message", channel: "D9", user: "U_owner", text: "hi", ts: "2.7" };
+    expect(parseInbound(ev, "U_charly")?.channel).toBe("D9");
+  });
 });
 
 describe("parseDeri6Signal (scoped bot-message exception — deri6 OCR + bill triggers)", () => {

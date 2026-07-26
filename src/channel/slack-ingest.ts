@@ -116,14 +116,39 @@ export function parseDeri6Signal(
  * "file_share") — and rejects anything from a bot (incl. the agent's own echoes),
  * edits, joins, and messages with neither text nor files.
  */
+/** Strip every `<@BOTID>` / `<@BOTID|label>` mention of this bot, then collapse the whitespace it left. */
+export function stripMention(text: string, selfBotUserId?: string): string {
+  if (!selfBotUserId) return text.trim();
+  return text
+    .replace(new RegExp(`<@${selfBotUserId}(\\|[^>]*)?>`, "g"), " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Two entry event types:
+ *   - DMs: a `message` event with channel_type "im" (respond to everything the owner/allowed user says).
+ *   - Channels: an `app_mention` event (respond ONLY when the bot is explicitly @-mentioned), so agents
+ *     never react to unrelated chatter in a shared channel.
+ * A plain `message` with a present, non-"im" channel_type is rejected: DMs stay DM-only, so a future scope
+ * widening (e.g. channels:history) can't silently make agents react to public-channel posts, and a channel
+ * message can never double-fire alongside its app_mention.
+ */
 export function parseInbound(event: unknown, selfBotUserId?: string): ParsedInbound | null {
   const e = event as Record<string, unknown> | null;
-  if (!e || e.type !== "message") return null;
-  // allow plain messages and file uploads; reject edits / bot_message / joins / ...
-  if (e.subtype && e.subtype !== "file_share") return null;
-  if (e.bot_id) return null; // any bot, including self
+  if (!e) return null;
+  const isMention = e.type === "app_mention";
+  if (e.type !== "message" && !isMention) return null;
+  if (!isMention) {
+    // message-only hygiene: allow plain messages and file uploads; reject edits / bot_message / joins / ...
+    if (e.subtype && e.subtype !== "file_share") return null;
+    if (e.bot_id) return null; // any bot, including self
+    // DM-only: reject a channel message; channels are reached exclusively through app_mention.
+    if (typeof e.channel_type === "string" && e.channel_type !== "im") return null;
+  }
   if (selfBotUserId && e.user === selfBotUserId) return null;
-  const text = typeof e.text === "string" ? e.text.trim() : "";
+  const raw = typeof e.text === "string" ? e.text : "";
+  const text = isMention ? stripMention(raw, selfBotUserId) : raw.trim();
   const files = parseFiles(e.files);
   if (!text && files.length === 0) return null;
   if (typeof e.channel !== "string" || typeof e.user !== "string" || typeof e.ts !== "string") return null;
@@ -245,7 +270,10 @@ export function startSlackIngest(cfg: EngineConfig): () => void {
     // Reuse one Web client per agent for the "seen" 👀 reaction (reactions:write).
     const web = agent.slack!.botToken ? new WebClient(agent.slack!.botToken) : null;
 
-    sm.on("message", async (args: { ack?: () => Promise<void>; event?: unknown; body?: { event?: unknown } }) => {
+    // Shared handler for both entry paths: DMs arrive as `message`, channel @-mentions as `app_mention`.
+    // parseDeri6Signal no-ops for app_mention (message-only), and the `slack:<ts>` dedup key means that if
+    // a single mention ever surfaced as both events, only the first enqueues.
+    const handle = async (args: { ack?: () => Promise<void>; event?: unknown; body?: { event?: unknown } }) => {
       if (args.ack) {
         try {
           await args.ack();
@@ -331,9 +359,12 @@ export function startSlackIngest(cfg: EngineConfig): () => void {
       });
       logger.info(
         { agent: agent.id, enqueued: id != null, files: parsed.files.length },
-        "inbound DM enqueued"
+        parsed.channel.startsWith("D") ? "inbound DM enqueued" : "inbound channel mention enqueued"
       );
-    });
+    };
+
+    sm.on("message", handle);
+    sm.on("app_mention", handle); // channel @-mentions (respond only when explicitly mentioned)
 
     sm.start().catch((err: unknown) => logger.error({ agent: agent.id, err }, "socket start failed"));
     clients.push(sm);
