@@ -62,7 +62,10 @@ export function checkTenantLeaks(target: string, text: string): ConfigIssue[] {
  */
 const MUTATING_SAFETY_ANCHORS: Array<{ re: RegExp; what: string }> = [
   { re: /never\s+delete/i, what: "never-delete/archive/merge rule" },
-  { re: /never\s+destroys?|propose/i, what: "propose-not-destroy framing" },
+  // Must be the specific propose-not-destroy phrasing ("... it never destroys"), NOT a bare "propose":
+  // a loose /propose/ can be satisfied by unrelated text ("I might propose a new priority") while the
+  // actual no-destroy guarantee has been stripped — which would make this teeth-check vacuous.
+  { re: /never\s+destroys?/i, what: 'propose-not-destroy framing (the specific "never destroys" phrasing)' },
   { re: /not\s+instructions|do\s+not\s+act\s+on|is\s+just\s+text/i, what: "card-text-is-data injection hardening" },
 ];
 
