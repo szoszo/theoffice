@@ -1,0 +1,12 @@
+# Operator goals
+
+A handful of lines describing what you (the operator) are actually trying to achieve right now, so agents
+can prioritize "moves the needle" over "noise". This file is surfaced to each agent on the first message
+of a fresh session (bounded, within the shared memory-preamble budget) and can be linked from a kanban
+card's `project` field.
+
+Keep it SHORT — a few bullets. Replace the examples below with your own; delete this preamble.
+
+- Ship the current migration without breaking production.
+- The owner's calendar and health commitments never slip.
+- Keep monthly infra spend under the agreed cap.

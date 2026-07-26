@@ -31,6 +31,10 @@ export function minuteKey(nowMs: number): number {
  * counterpart to isDueNow (which SILENTLY treats a bad expression as never-due). Reuses the same
  * cron-parser, so "valid here" == "parseable by the live scheduler". Pure; no behaviour change to the
  * runtime path. Used by the structural config lint (issue #21 §4a).
+ *
+ * Note: a 6-field (seconds) expression parses as valid, but the scheduler ticks per-MINUTE (isDueNow
+ * floors to the minute), so the seconds field is effectively ignored at runtime. Fine to accept; just
+ * don't rely on sub-minute precision.
  */
 export function isValidCron(expr: unknown): boolean {
   if (typeof expr !== "string" || !expr.trim()) return false;

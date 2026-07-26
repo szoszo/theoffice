@@ -14,6 +14,7 @@ logs/
 /tenant/**
 !/tenant/config/
 !/tenant/config/overrides.example.json
+!/tenant/GOALS.md.example
 
 # env & secrets
 .env

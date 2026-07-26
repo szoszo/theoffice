@@ -97,6 +97,12 @@ if [ ! -f "$TENANT_ROOT/config/overrides.json" ]; then
     say "seeded tenant/config/overrides.json from example — EDIT it (owner, channel, slackUserId)"
   fi
 fi
+# Seed the operator goals layer (issue #21 §3) from the example, ONLY IF ABSENT — an existing GOALS.md the
+# operator has written is never overwritten.
+if [ ! -f "$TENANT_ROOT/GOALS.md" ] && [ -f "$INSTALL_DIR/tenant/GOALS.md.example" ]; then
+  cp "$INSTALL_DIR/tenant/GOALS.md.example" "$TENANT_ROOT/GOALS.md"
+  say "seeded tenant/GOALS.md from example — EDIT it with your actual goals (a few lines)"
+fi
 
 # Seed shipped-default scheduled tasks (issue #21 §2 kanban-grooming, and any future ones). Each template
 # task is copied into the live tenant ONLY IF ABSENT — an existing task the operator has edited, disabled,
