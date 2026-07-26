@@ -10,24 +10,33 @@ interface ClaudeProject {
 }
 interface ClaudeConfig {
   projects?: Record<string, ClaudeProject>;
+  bypassPermissionsModeAccepted?: boolean;
   [k: string]: unknown;
 }
 
 /**
- * Pre-accept Claude Code's folder-trust gate for an agent's working directory.
+ * Pre-accept the TWO interactive gates a freshly-launched `claude` blocks on, so an
+ * automated tmux pane boots straight to the prompt instead of sitting on a dialog
+ * nobody can answer. Both gates fail the same way: the pane never reaches idle, so
+ * `isReady` never passes, so the deliverer can never hand it a message — the agent
+ * looks dead while the inbound queue silently piles up (attempts stay 0, no error).
  *
- * A freshly-launched `claude` in a never-before-seen directory blocks on the
- * interactive "Is this a project you trust? 1. Yes / 2. No" prompt — and
- * `--dangerously-skip-permissions` does NOT bypass it (anthropics/claude-code
- * #28506 / #36342). In an automated tmux launch nothing types "1", so the pane
- * never reaches idle and the deliverer can never hand it a message: the agent
- * looks dead while the inbound queue silently piles up.
+ * 1. Folder trust ("Is this a project you trust?") — per-project
+ *    `hasTrustDialogAccepted`. `--dangerously-skip-permissions` does NOT bypass it
+ *    (anthropics/claude-code #28506 / #36342).
+ * 2. The bypass-permissions disclaimer ("WARNING: Claude Code running in Bypass
+ *    Permissions mode … 2. Yes, I accept") — global `bypassPermissionsModeAccepted`.
+ *    This one is gated on the flag ALREADY being true at startup and Claude does not
+ *    write it back when you accept interactively, so every fresh session re-prompts
+ *    until we seed it. Without the flag Claude also silently downgrades the mode
+ *    ("bypass requires accepting the disclaimer interactively first"), which would
+ *    break `office-say` / git / vault writes even if the pane got past the dialog.
  *
- * We persist the very same `hasTrustDialogAccepted` flag Claude itself writes to
- * ~/.claude.json, so the session boots straight to the prompt. Idempotent, and
- * it preserves every other key in the file (read-modify-write + atomic rename).
+ * We persist the very same keys Claude itself reads from ~/.claude.json. Idempotent,
+ * one read-modify-write for both gates, and it preserves every other key in the file
+ * (atomic rename — never leaves a half-written ~/.claude.json).
  */
-export function ensureFolderTrusted(agentDir: string): void {
+export function ensureClaudeGatesAccepted(agentDir: string): void {
   const home = process.env.HOME;
   if (!home) return;
   const cfgPath = join(home, ".claude.json");
@@ -37,13 +46,16 @@ export function ensureFolderTrusted(agentDir: string): void {
     const cfg = JSON.parse(readFileSync(cfgPath, "utf8")) as ClaudeConfig;
     cfg.projects ??= {};
     const existing = cfg.projects[dir];
-    if (existing?.hasTrustDialogAccepted) return; // already trusted — leave Claude's own state alone
-    cfg.projects[dir] = { ...(existing ?? {}), hasTrustDialogAccepted: true };
+    const needsTrust = !existing?.hasTrustDialogAccepted;
+    const needsBypass = cfg.bypassPermissionsModeAccepted !== true;
+    if (!needsTrust && !needsBypass) return; // both gates already open — leave Claude's own state alone
+    if (needsTrust) cfg.projects[dir] = { ...(existing ?? {}), hasTrustDialogAccepted: true };
+    if (needsBypass) cfg.bypassPermissionsModeAccepted = true;
     const tmp = `${cfgPath}.office-${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(cfg, null, 2));
     renameSync(tmp, cfgPath); // atomic: never leaves a half-written ~/.claude.json
-    logger.info({ dir }, "pre-accepted folder trust");
+    logger.info({ dir, trust: needsTrust, bypass: needsBypass }, "pre-accepted claude startup gates");
   } catch (err) {
-    logger.warn({ dir, err }, "could not pre-seed folder trust (agent may block on the trust prompt)");
+    logger.warn({ dir, err }, "could not pre-seed claude startup gates (agent may block on a startup dialog)");
   }
 }

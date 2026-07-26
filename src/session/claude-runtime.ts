@@ -7,7 +7,7 @@ import { capturePane, clearInput, hasSession, newSession, sendKey, sendText, ses
 import { withPaneLock } from "./pane-lock.js";
 import { detectPaneState, decideSubmitFollowup, inputBoxProvablyEmptyStyled, stripPaneStyling } from "./pane-state.js";
 import { writeAgentSettings } from "./profile.js";
-import { ensureFolderTrusted } from "./trust.js";
+import { ensureClaudeGatesAccepted } from "./trust.js";
 import { markDelivering, markDelivered, markFailed, requeue } from "../queue/index.js";
 import { recordInbound } from "../memory/conversation.js";
 import { firstMessagePreamble } from "./goals.js";
@@ -201,11 +201,10 @@ function launchClaude(cfg: EngineConfig, agent: AgentDef): boolean {
   const env = buildAgentEnv(cfg, agent);
   // regenerate the agent's security profile (connector + filesystem deny) before launch
   writeAgentSettings(cfg, agent);
-  // pre-accept Claude's folder-trust gate; otherwise a fresh pane blocks on the
-  // interactive "trust this folder?" prompt forever and never reaches idle, so
-  // the deliverer can never hand it a message (and --dangerously-skip-permissions
-  // does NOT bypass that prompt). Idempotent.
-  ensureFolderTrusted(agent.dir);
+  // pre-accept Claude's two startup gates (folder trust + the bypass-permissions
+  // disclaimer); otherwise a fresh pane blocks on an interactive dialog forever and
+  // never reaches idle, so the deliverer can never hand it a message. Idempotent.
+  ensureClaudeGatesAccepted(agent.dir);
   const ok = newSession(cfg.tmux.socket, session, { cwd: agent.dir, command, env });
   // Only a genuinely NEW session needs priming. ok=false means the session already existed (e.g. an
   // engine restart while the decoupled tmux server kept it alive) — it already holds its context, so we

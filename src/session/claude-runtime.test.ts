@@ -37,7 +37,7 @@ vi.mock("./pane-state.js", () => ({
   decideSubmitFollowup: () => "done", // submit confirmed on the first check
 }));
 vi.mock("./profile.js", () => ({ writeAgentSettings: () => {} }));
-vi.mock("./trust.js", () => ({ ensureFolderTrusted: () => {} }));
+vi.mock("./trust.js", () => ({ ensureClaudeGatesAccepted: () => {} }));
 vi.mock("../queue/index.js", () => ({
   markDelivering: () => {},
   markDelivered: () => {},

@@ -22,7 +22,7 @@ vi.mock("./tmux.js", () => ({
 }));
 vi.mock("./pane-state.js", () => ({ detectPaneState: () => "idle", decideSubmitFollowup: () => "done" }));
 vi.mock("./profile.js", () => ({ writeAgentSettings: () => {} }));
-vi.mock("./trust.js", () => ({ ensureFolderTrusted: () => {} }));
+vi.mock("./trust.js", () => ({ ensureClaudeGatesAccepted: () => {} }));
 vi.mock("../env.js", () => ({ readEnvFile: () => ({}) }));
 
 import { claudeRuntime } from "./claude-runtime.js";
