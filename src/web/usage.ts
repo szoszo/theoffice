@@ -24,13 +24,18 @@ export interface AgentUsage {
   cacheRead: number;
   cacheWrite: number;
   turns: number;
+  /** false when the runtime keeps no Claude transcripts (codex/gemini) so usage is unmeasurable → show "n/a", not 0. */
+  tracked: boolean;
 }
 
 export function computeUsage(agents: AgentDef[], cutoffMs: number): AgentUsage[] {
   return agents.map((a) => {
+    // Usage is parsed from Claude Code transcripts; non-Claude runtimes don't write them,
+    // so their tokens are unmeasurable here (report n/a rather than a misleading 0).
+    const tracked = (a.runtime ?? "claude") === "claude";
     const dir = join(PROJECTS, projectDirFor(a.dir));
     let input = 0, output = 0, cr = 0, cc = 0, turns = 0;
-    if (existsSync(dir)) {
+    if (tracked && existsSync(dir)) {
       for (const f of readdirSync(dir)) {
         if (!f.endsWith(".jsonl")) continue;
         let text: string;
@@ -59,7 +64,7 @@ export function computeUsage(agents: AgentDef[], cutoffMs: number): AgentUsage[]
         }
       }
     }
-    return { id: a.id, input, output, cacheRead: cr, cacheWrite: cc, turns };
+    return { id: a.id, input, output, cacheRead: cr, cacheWrite: cc, turns, tracked };
   });
 }
 

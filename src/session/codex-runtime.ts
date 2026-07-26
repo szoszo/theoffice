@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { readEnvFile } from "../env.js";
+import { buildAgentEnv } from "./agent-env.js";
 import type { EngineConfig, AgentDef } from "../types.js";
 import { log } from "../logger.js";
 import { newSession } from "./tmux.js";
@@ -71,18 +71,9 @@ export function isCodexBusy(agentId: string): boolean {
 }
 
 function codexEnv(cfg: EngineConfig, agent: AgentDef): Record<string, string> {
-  const home = process.env.HOME ?? "";
-  const env: Record<string, string> = {
-    // ~/.local/bin first so the exec can call office-say (Slack reply) and find the codex binary
-    PATH: `${home}/.local/bin:${process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"}`,
-    TZ: cfg.owner.timezone,
-    HOME: home,
-    OFFICE_AGENT_ID: agent.id,
-    OFFICE_TENANT_ROOT: cfg.paths.tenantRoot,
-    OFFICE_PORT: String(cfg.web.port),
-  };
-  for (const [k, v] of Object.entries(readEnvFile(join(agent.dir, ".env")))) env[k] = v;
-  return env;
+  // Shared builder: applies the agent's .env FIRST, then the engine's reserved keys overwrite it, so a
+  // stray .env line (PATH=/HOME=/OFFICE_PORT=) can't break office-say or redirect the agent. See agent-env.ts.
+  return buildAgentEnv(cfg, agent);
 }
 
 /**

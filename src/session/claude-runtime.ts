@@ -1,6 +1,6 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { readEnvFile } from "../env.js";
+import { buildAgentEnv } from "./agent-env.js";
 import type { EngineConfig, AgentDef } from "../types.js";
 import { log } from "../logger.js";
 import { capturePane, clearInput, hasSession, newSession, sendKey, sendText, sessionNameFor } from "./tmux.js";
@@ -120,18 +120,9 @@ function launchClaude(cfg: EngineConfig, agent: AgentDef): boolean {
   // is exactly why a pinned value survives restarts and can't be knocked over by another agent's
   // switch — /effort and /model also write themselves into that file as a default.
   if (agent.effort) command.push("--effort", agent.effort);
-  const home = process.env.HOME ?? "";
-  const env: Record<string, string> = {
-    // ~/.local/bin first so the agent can call `office-say` to reply on Slack
-    PATH: `${home}/.local/bin:${process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"}`,
-    TZ: cfg.owner.timezone,
-    HOME: home,
-    OFFICE_AGENT_ID: agent.id,
-    OFFICE_TENANT_ROOT: cfg.paths.tenantRoot,
-    OFFICE_PORT: String(cfg.web.port),
-  };
-  // per-agent secrets/env (e.g. an API key for one agent, scoped Drive creds for another)
-  for (const [k, v] of Object.entries(readEnvFile(join(agent.dir, ".env")))) env[k] = v;
+  // Shared env builder: applies the agent's .env FIRST, then the engine's reserved keys overwrite it, so a
+  // stray .env line (PATH=/HOME=/OFFICE_PORT=) can't break office-say or redirect the agent. See agent-env.ts.
+  const env = buildAgentEnv(cfg, agent);
   // regenerate the agent's security profile (connector + filesystem deny) before launch
   writeAgentSettings(cfg, agent);
   // pre-accept Claude's folder-trust gate; otherwise a fresh pane blocks on the

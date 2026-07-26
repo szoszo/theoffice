@@ -10,6 +10,17 @@ const logger = log("slack-files");
 // generous. Enforced from the Content-Length header BEFORE reading the body.
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
 
+/** The bot token is attached to the download URL, so only ever send it to a Slack host — a hostile
+ *  url_private (Slack-supplied field) must not be able to exfiltrate the bot token to another origin. */
+export function isSlackHost(url: string): boolean {
+  try {
+    const h = new URL(url).hostname.toLowerCase();
+    return h === "slack.com" || h.endsWith(".slack.com");
+  } catch {
+    return false;
+  }
+}
+
 export interface DownloadedFile {
   name: string;
   path: string;
@@ -38,7 +49,10 @@ export async function downloadFiles(
     const path = join(destDir, `${tsPrefix}-${safe}`);
     let ok = false;
     const url = f.urlPrivateDownload;
-    if (url) {
+    if (url && !isSlackHost(url)) {
+      // Never attach the bot token to a non-Slack host (defense-in-depth on a Slack-supplied URL).
+      logger.warn({ file: f.name }, "refusing file download from non-Slack host");
+    } else if (url) {
       try {
         const resp = await fetch(url, { headers: { Authorization: `Bearer ${botToken}` } });
         const ct = resp.headers.get("content-type") || "";
