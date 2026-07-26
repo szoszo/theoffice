@@ -9,7 +9,7 @@ const MAX_CONTENT_CHARS = 500; // truncate any single memory so one entry can't 
 // that fragile path AND floods the agent's context every prime. Budget a few KB (~1.5k tokens) in strict
 // priority — active work (hot) first, then stable facts (warm), then message-topical (cold/shared). The
 // long tail stays reachable via the on-demand memory-search API. (Szoszo's "don't overload us" guardrail.)
-const MAX_TOTAL_CHARS = 6000;
+export const PREAMBLE_MAX_CHARS = 6000;
 
 function line(r: MemoryRow): string {
   return `- (${r.category}) ${r.content.slice(0, MAX_CONTENT_CHARS)}`;
@@ -19,7 +19,7 @@ function line(r: MemoryRow): string {
  * Build the memory preamble injected when an agent is primed at the start of a session (see the
  * deliverer). Prioritizes the agent's `hot` (active work) then `warm` (stable facts/prefs) — few and
  * always relevant — then any `cold` (history) / `shared` (cross-agent) memories matching the incoming
- * prompt. The whole thing is capped to MAX_TOTAL_CHARS so it never overloads the send-keys path or the
+ * prompt. The whole thing is capped to PREAMBLE_MAX_CHARS so it never overloads the send-keys path or the
  * agent's context; anything trimmed is noted and remains searchable on demand. Returns "" when there is
  * nothing worth surfacing, so the caller can prepend unconditionally.
  *
@@ -46,7 +46,7 @@ export function recallForPrompt(agentId: string, prompt: string): string {
   let used = 0;
   for (const r of ordered) {
     const l = line(r);
-    if (used + l.length + 1 > MAX_TOTAL_CHARS) break;
+    if (used + l.length + 1 > PREAMBLE_MAX_CHARS) break;
     picked.push(l);
     used += l.length + 1;
   }

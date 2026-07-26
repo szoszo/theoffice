@@ -10,7 +10,7 @@ import { writeAgentSettings } from "./profile.js";
 import { ensureFolderTrusted } from "./trust.js";
 import { markDelivering, markDelivered, markFailed, requeue } from "../queue/index.js";
 import { recordInbound } from "../memory/conversation.js";
-import { recallForPrompt } from "../memory/recall.js";
+import { firstMessagePreamble } from "./goals.js";
 import type { Runtime, QueuedItem } from "./runtime.js";
 import { frameForDelivery } from "./delivery.js";
 import { EFFORT_LEVELS } from "./effort.js";
@@ -161,10 +161,12 @@ async function deliverClaude(cfg: EngineConfig, agent: AgentDef, item: QueuedIte
   const prime = needsPrime.has(item.agent_id);
   if (prime) {
     try {
-      const mem = recallForPrompt(item.agent_id, item.prompt);
-      if (mem) text = `${mem}\n\n${text}`;
+      // Operator goals (framing) + recalled memory, assembled WITHIN one pane-inject budget so the
+      // combined preamble never overloads the send-keys path. Best-effort; missing bits are no-ops. See goals.ts.
+      const pre = firstMessagePreamble(cfg, item.agent_id, item.prompt);
+      if (pre) text = `${pre}\n\n${text}`;
     } catch (err) {
-      logger.warn({ agent: item.agent_id, err }, "memory recall failed (delivering without)");
+      logger.warn({ agent: item.agent_id, err }, "first-message preamble failed (delivering without)");
     }
   }
   const res = await withPaneLock(session, () => deliverPrompt(socket, session, text));

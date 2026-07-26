@@ -39,7 +39,7 @@ vi.mock("../queue/index.js", () => ({
   requeue: () => {},
 }));
 vi.mock("../memory/conversation.js", () => ({ recordInbound: () => {} }));
-vi.mock("../memory/recall.js", () => ({ recallForPrompt: () => "MEM_PREAMBLE_SENTINEL" }));
+vi.mock("../memory/recall.js", () => ({ recallForPrompt: () => "MEM_PREAMBLE_SENTINEL", PREAMBLE_MAX_CHARS: 6000 }));
 vi.mock("../env.js", () => ({ readEnvFile: () => ({}) }));
 
 import { claudeRuntime } from "./claude-runtime.js";
