@@ -14,7 +14,13 @@ const MAX_FILE_BYTES = 50 * 1024 * 1024;
  *  url_private (Slack-supplied field) must not be able to exfiltrate the bot token to another origin. */
 export function isSlackHost(url: string): boolean {
   try {
-    const h = new URL(url).hostname.toLowerCase();
+    // new URL() parsing does the load-bearing normalization: it lowercases the host, EXCLUDES any
+    // :port, and resolves userinfo tricks ("slack.com@evil.com" -> host is evil.com). We additionally
+    // fold a trailing-dot FQDN ("files.slack.com." -> "files.slack.com") and require a real dot-boundary
+    // match, so look-alikes (evilslack.com), suffix traps (slack.com.evil.com) and IP literals all fail.
+    // Fails CLOSED: a non-match means the caller sends NO token-bearing request at all (a missed download,
+    // never a token leak). url_private_download is served from files.slack.com, i.e. a *.slack.com host.
+    const h = new URL(url).hostname.toLowerCase().replace(/\.$/, "");
     return h === "slack.com" || h.endsWith(".slack.com");
   } catch {
     return false;
