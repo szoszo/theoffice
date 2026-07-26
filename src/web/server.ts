@@ -699,6 +699,33 @@ async function handleApi(
     return json(res, 200, { ok: true, id });
   }
 
+  // --- kanban metadata patch : PATCH /api/kanban/<id> {priority?, project?} ---
+  // METADATA ONLY, by design. The grooming task (issue #21 §2) uses this to re-prioritize / re-project a
+  // card. It deliberately CANNOT touch status/title/parent/assignee: no done-bypass, no rewrite, no
+  // re-parent. The SET clause is built only from these two hardcoded column literals (never from request
+  // keys), and only the values are bound — so an off-scope field in the body is silently inert, not an update.
+  const kp = path.match(/^\/api\/kanban\/([^/]+)$/);
+  if (kp && m === "PATCH") {
+    const raw = await readBody(req, res); if (raw === null) return;
+    const body = parseJson(raw) ?? {};
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    if ("priority" in body) {
+      if (!["low", "normal", "high", "urgent"].includes(body.priority)) return json(res, 400, { error: "bad priority" });
+      sets.push("priority=?"); vals.push(body.priority);
+    }
+    if ("project" in body) {
+      const p = body.project;
+      if (p !== null && (typeof p !== "string" || p.length > 120)) return json(res, 400, { error: "bad project (string <=120 or null)" });
+      sets.push("project=?"); vals.push(p);
+    }
+    if (sets.length === 0) return json(res, 400, { error: "no updatable fields (priority/project only)" });
+    const id = decodeURIComponent(kp[1]!);
+    const info = db.prepare(`UPDATE kanban_cards SET ${sets.join(", ")}, updated_at=unixepoch() WHERE id=?`).run(...vals, id);
+    if (info.changes === 0) return json(res, 404, { error: "card not found", id });
+    return json(res, 200, { ok: true, id });
+  }
+
   // --- memory category update : /api/memories/<id>/category {category} — live hot->cold reclass path ---
   const mc = path.match(/^\/api\/memories\/([^/]+)\/category$/);
   if (mc && m === "POST") {

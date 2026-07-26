@@ -310,3 +310,115 @@ describe("agent effort/model tuning", () => {
     expect(agentJson().model).toBe("gemini-3.6-flash-high");
   });
 });
+
+/**
+ * PATCH /api/kanban/<id> — the metadata-only update the grooming task uses to re-prioritize / re-project
+ * a card (issue #21 §2). The load-bearing safety property is SCOPE: it may set ONLY priority + project.
+ * It must NOT be a back door to flip status (done-bypass), rewrite the title, or re-parent a card — so the
+ * destructive-field test is the one that actually guards the feature, not the happy path.
+ */
+describe("kanban card metadata PATCH (priority/project only)", () => {
+  let tempDir: string;
+  let cfg: any;
+  let stopServer: () => void;
+  let base: string;
+
+  const auth = { authorization: `Bearer ${MOCK_TOKEN}`, "content-type": "application/json" };
+
+  const createCard = async (over: Record<string, unknown> = {}) => {
+    const res = await fetch(`${base}/api/kanban`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ title: "groom me", status: "planned", priority: "normal", ...over }),
+    });
+    return (await res.json()).id as string;
+  };
+  const patch = (id: string, body: unknown, token = MOCK_TOKEN) =>
+    fetch(`${base}/api/kanban/${id}`, {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const getCard = async (id: string) => {
+    const res = await fetch(`${base}/api/kanban`, { headers: auth });
+    return ((await res.json()) as any[]).find((c) => c.id === id);
+  };
+
+  beforeEach(async () => {
+    tempDir = join(tmpdir(), "theoffice-kanpatch-" + Math.random().toString(36).slice(2));
+    mkdirSync(join(tempDir, "store"), { recursive: true });
+    writeFileSync(join(tempDir, "store", ".dashboard-token"), MOCK_TOKEN);
+    openDb(join(tempDir, "store", "test.db"));
+    const port = await freePort();
+    base = `http://127.0.0.1:${port}`;
+    cfg = {
+      web: { host: "127.0.0.1", port, rateLimit: { maxFails: 50, windowMs: 1000, blockMs: 1000 } },
+      paths: { dashboardTokenFile: join(tempDir, "store", ".dashboard-token"), tenantRoot: tempDir },
+      owner: { timezone: "UTC" },
+      channel: { provider: "none" },
+    };
+    stopServer = startServer(cfg);
+    await new Promise((r) => setTimeout(r, 100));
+  });
+
+  afterEach(() => {
+    if (stopServer) stopServer();
+    closeDb();
+    if (existsSync(tempDir)) rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("updates priority and project, and GET reflects it", async () => {
+    const id = await createCard();
+    const res = await patch(id, { priority: "high", project: "ops" });
+    expect(res.status).toBe(200);
+    const card = await getCard(id);
+    expect(card.priority).toBe("high");
+    expect(card.project).toBe("ops");
+  });
+
+  it("rejects a bad priority with 400 and leaves the card unchanged", async () => {
+    const id = await createCard();
+    const res = await patch(id, { priority: "banana" });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/priority/i);
+    expect((await getCard(id)).priority).toBe("normal"); // untouched
+  });
+
+  // THE load-bearing guard: destructive/off-scope fields must NOT ride along. A card cannot be marked
+  // done, retitled, or re-parented through this endpoint — only priority/project apply.
+  it("ignores destructive/off-scope fields (no status/title/parent bypass)", async () => {
+    const id = await createCard({ title: "original", status: "planned" });
+    const res = await patch(id, { status: "done", title: "HACKED", parent_id: "x", priority: "low" });
+    expect(res.status).toBe(200); // the valid part (priority) applied
+    const card = await getCard(id);
+    expect(card.priority).toBe("low"); // the one allowed change
+    expect(card.status).toBe("planned"); // NOT flipped to done
+    expect(card.title).toBe("original"); // NOT rewritten
+    expect(card.parent_id).toBeFalsy(); // NOT re-parented
+  });
+
+  it("400s a patch with no updatable field (priority/project only)", async () => {
+    const id = await createCard();
+    const res = await patch(id, { status: "done" }); // only off-scope fields present
+    expect(res.status).toBe(400);
+    expect((await getCard(id)).status).toBe("planned");
+  });
+
+  it("400s an over-long project string (bounded)", async () => {
+    const id = await createCard();
+    const res = await patch(id, { project: "p".repeat(200) });
+    expect(res.status).toBe(400);
+  });
+
+  it("requires auth — 401 without a token, card unchanged", async () => {
+    const id = await createCard();
+    const res = await patch(id, { priority: "urgent" }, "bad-token");
+    expect(res.status).toBe(401);
+    expect((await getCard(id)).priority).toBe("normal");
+  });
+
+  it("404s an unknown card id", async () => {
+    const res = await patch("deadbeef", { priority: "high" });
+    expect(res.status).toBe(404);
+  });
+});

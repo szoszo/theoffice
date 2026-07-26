@@ -98,6 +98,20 @@ if [ ! -f "$TENANT_ROOT/config/overrides.json" ]; then
   fi
 fi
 
+# Seed shipped-default scheduled tasks (issue #21 §2 kanban-grooming, and any future ones). Each template
+# task is copied into the live tenant ONLY IF ABSENT — an existing task the operator has edited, disabled,
+# or deleted is NEVER clobbered or re-created on a re-install.
+if [ -d "$INSTALL_DIR/templates/scheduled-tasks" ]; then
+  for _t in "$INSTALL_DIR"/templates/scheduled-tasks/*/; do
+    [ -d "$_t" ] || continue
+    _name=$(basename "$_t")
+    if [ ! -e "$TENANT_ROOT/scheduled-tasks/$_name" ]; then
+      cp -r "$_t" "$TENANT_ROOT/scheduled-tasks/$_name"
+      say "seeded default scheduled task: $_name"
+    fi
+  done
+fi
+
 # ---- 3b. dashboard bind: localhost vs LAN -----------------------------------
 # Default 127.0.0.1 (safe — only this machine / SSH tunnel). LAN (0.0.0.0) lets
 # any device on the home network reach it (phone, laptop). Choose via prompt when
