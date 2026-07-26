@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { mkdtempSync, rmSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import Database from "better-sqlite3";
@@ -46,5 +46,20 @@ describe("backupDb", () => {
     expect(names.size).toBe(7); // all unique despite ms collisions
     const baks = readdirSync(dir).filter((f) => f.startsWith("theoffice.db.bak-"));
     expect(baks.length).toBeLessThanOrEqual(5); // pruned
+  });
+});
+
+/**
+ * The install step can't be exercised for real in a unit test (it pulls, installs and rebuilds the live
+ * checkout), so guard the one flag whose absence silently breaks EVERY update on a normal deployment: the
+ * engine runs under NODE_ENV=production, npm turns that into omit=dev, and `npm run build` then can't find
+ * `tsc`. The update rolls itself back, so the symptom is "the button does nothing" rather than a crash.
+ */
+describe("applyUpdate install step", () => {
+  it("installs devDependencies explicitly, so the build can find tsc under NODE_ENV=production", () => {
+    const src = readFileSync(new URL("./update.ts", import.meta.url), "utf8");
+    const ciStep = src.match(/step\("npm", \[([^\]]*)\]\)/)?.[1] ?? "";
+    expect(ciStep).toContain("ci");
+    expect(ciStep).toContain("--include=dev");
   });
 });

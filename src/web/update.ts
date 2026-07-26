@@ -150,7 +150,10 @@ export function applyUpdate(opts?: { discardLocal?: boolean }): {
   const home = process.env.HOME ?? "";
   try {
     step("git", ["pull", "--ff-only", "origin", "main"]);
-    step("npm", ["ci", "--no-audit", "--no-fund"]); // ci (not install): reproducible from the lockfile
+    // ci (not install): reproducible from the lockfile. --include=dev is NOT optional: the engine runs under
+    // NODE_ENV=production, npm inherits that as omit=dev, and the very next step needs `tsc` from
+    // devDependencies — without the flag the build dies on "tsc: not found" and every update rolls back.
+    step("npm", ["ci", "--include=dev", "--no-audit", "--no-fund"]);
     step("npm", ["run", "build"]);
     // The office-say helper lives on PATH (~/.local/bin); recopy it post-build so a changed version ships
     // with the update instead of going stale.
