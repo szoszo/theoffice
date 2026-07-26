@@ -15,8 +15,8 @@ exactly one Socket-Mode connection per agent-app, so there is no event-splitting
    lets the agent open images/PDFs you send it; `files:write` lets it send files
    back. Add `channels:history`/`app_mentions:read` if the agent should also listen
    in channels). Install to workspace → copy the **Bot User OAuth Token** (`xoxb-…`).
-4. **Event Subscriptions** → Enable, subscribe to bot events: `message.im`
-   (and `app_mention` if used).
+4. **Event Subscriptions** → Enable, subscribe to bot events: `message.im` + `app_mention`
+   (`app_mention` lets agents respond to channel @-mentions — invite the bot to the channel too).
 5. Note the bot's user id (`U…`) from "OAuth & Permissions" / `auth.test`.
 
 > For a product/customer box this whole step is scripted from an app **manifest**
@@ -39,7 +39,7 @@ the owner can't DM the agent.
     "scopes": { "bot": ["chat:write", "im:history", "im:read", "im:write", "users:read", "files:read", "files:write"] }
   },
   "settings": {
-    "event_subscriptions": { "bot_events": ["message.im"] },
+    "event_subscriptions": { "bot_events": ["message.im", "app_mention"] },
     "interactivity": { "is_enabled": false },
     "org_deploy_enabled": false,
     "socket_mode_enabled": true,

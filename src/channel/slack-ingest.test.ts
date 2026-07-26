@@ -122,6 +122,12 @@ describe("parseInbound", () => {
     const ev = { type: "message", channel: "D9", user: "U_owner", text: "hi", ts: "2.7" };
     expect(parseInbound(ev, "U_charly")?.channel).toBe("D9");
   });
+
+  it("FAILS CLOSED: an absent-channel_type message on a CHANNEL id (C...) is rejected, not accepted", () => {
+    // absent channel_type must NOT be treated as a DM unless the id is a D-channel — else a channel post
+    // could slip past the DM-only guard if message.channels scope were ever added.
+    expect(parseInbound({ type: "message", channel: "C999", user: "U_owner", text: "hi", ts: "2.8" }, "U_charly")).toBeNull();
+  });
 });
 
 describe("parseDeri6Signal (scoped bot-message exception — deri6 OCR + bill triggers)", () => {

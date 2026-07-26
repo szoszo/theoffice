@@ -143,8 +143,13 @@ export function parseInbound(event: unknown, selfBotUserId?: string): ParsedInbo
     // message-only hygiene: allow plain messages and file uploads; reject edits / bot_message / joins / ...
     if (e.subtype && e.subtype !== "file_share") return null;
     if (e.bot_id) return null; // any bot, including self
-    // DM-only: reject a channel message; channels are reached exclusively through app_mention.
-    if (typeof e.channel_type === "string" && e.channel_type !== "im") return null;
+    // DM-only: accept a message ONLY as a DM — channel_type "im", or (when Slack omits channel_type) a
+    // D-channel id. Anything else (a C-id / non-"im" channel message) is rejected, so channels are reached
+    // exclusively via app_mention, a channel post can't double-fire alongside its mention, and an absent
+    // channel_type on a channel id can't slip through (fail closed).
+    const ct = e.channel_type;
+    const isDm = ct === "im" || (ct == null && typeof e.channel === "string" && e.channel.startsWith("D"));
+    if (!isDm) return null;
   }
   if (selfBotUserId && e.user === selfBotUserId) return null;
   const raw = typeof e.text === "string" ? e.text : "";
