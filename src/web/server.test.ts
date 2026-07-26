@@ -421,4 +421,19 @@ describe("kanban card metadata PATCH (priority/project only)", () => {
     const res = await patch("deadbeef", { priority: "high" });
     expect(res.status).toBe(404);
   });
+
+  // A non-object JSON body (string / number / bool / array) must 400 gracefully, never 500. `"priority"
+  // in body` throws a TypeError on a primitive, so the handler needs an explicit object guard first.
+  it("400s a non-object JSON body instead of throwing (500)", async () => {
+    const id = await createCard();
+    for (const bad of ['"foo"', "123", "true", "[1,2]"]) {
+      const res = await fetch(`${base}/api/kanban/${id}`, {
+        method: "PATCH",
+        headers: auth,
+        body: bad, // raw non-object JSON
+      });
+      expect(res.status).toBe(400);
+    }
+    expect((await getCard(id)).priority).toBe("normal"); // nothing mutated
+  });
 });

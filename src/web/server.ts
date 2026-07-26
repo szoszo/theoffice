@@ -708,6 +708,9 @@ async function handleApi(
   if (kp && m === "PATCH") {
     const raw = await readBody(req, res); if (raw === null) return;
     const body = parseJson(raw) ?? {};
+    // Guard a non-object JSON body ("foo"/123/true/[...]): the `in` operator below throws a TypeError on a
+    // primitive (would surface as a 500). Reject it as a clean 400 before touching the body.
+    if (typeof body !== "object" || Array.isArray(body)) return json(res, 400, { error: "body must be a JSON object" });
     const sets: string[] = [];
     const vals: unknown[] = [];
     if ("priority" in body) {
