@@ -12,6 +12,9 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 const h = vi.hoisted(() => ({
   pane: "idle-pane",
   ackPane: "idle-pane",
+  // Optional sequence of panes returned on successive Enter presses (models submit -> menu -> ack).
+  // When empty, Enter flips to ackPane as before, so existing single-step tests are unaffected.
+  enterPanes: [] as string[],
   sent: [] as string[],
   keys: [] as string[],
   hasSession: true,
@@ -26,7 +29,7 @@ vi.mock("./tmux.js", () => ({
   },
   sendKey: (_s: string, _n: string, k: string) => {
     h.keys.push(k);
-    if (k === "Enter") h.pane = h.ackPane;
+    if (k === "Enter") h.pane = h.enterPanes.length ? h.enterPanes.shift()! : h.ackPane;
   },
   clearInput: () => {},
 }));
@@ -40,6 +43,7 @@ const fast = { readyWaitMs: 60, readyPollMs: 10, ackWaitMs: 80, ackPollMs: 10, s
 beforeEach(() => {
   h.pane = "idle-pane";
   h.ackPane = "idle-pane";
+  h.enterPanes = [];
   h.sent = [];
   h.keys = [];
   h.hasSession = true;
@@ -111,5 +115,31 @@ describe("applyTune", () => {
     expect(r.ok).toBe(false);
     expect(r.reason).toBe("no-session");
     expect(h.sent).toHaveLength(0);
+  });
+
+  // A REAL cross-model switch invalidates the cached conversation, so the CLI interrupts with a
+  // "Switch model?" confirmation instead of acking. Pre-fix, applyTune couldn't answer it -> no-ack AND
+  // the agent stranded on the menu. RED-FIRST: without the menu handling these two fail.
+  it("confirms the cross-model 'Switch model?' menu and reports success (no wedge)", async () => {
+    const menu =
+      "❯ /model claude-haiku-4-5\n  Switch model? This conversation is cached for the current model.\n  ❯ 1. Yes, switch    2. No, go back";
+    const ack = "  ⎿  Set model to Haiku 4.5 and saved as your default for new sessions";
+    h.enterPanes = [menu, ack]; // submit Enter -> menu; our confirm Enter -> ack
+    const r = await applyTune("s", "agent-x", "model", "claude-haiku-4-5", fast);
+    expect(r.ok).toBe(true);
+    expect(r.message).toContain("Set model to Haiku 4.5");
+    // two Enters proves the confirm keystroke fired (submit + confirm), not just the submit
+    expect(h.keys.filter((k) => k === "Enter")).toHaveLength(2);
+  });
+
+  it("never strands the pane: a menu that never resolves is cancelled (Down -> No -> Enter)", async () => {
+    const menu = "  Switch model? ...\n  ❯ 1. Yes, switch    2. No, go back";
+    h.enterPanes = [menu]; // submit -> menu
+    h.ackPane = menu; // every later Enter still shows the menu: the confirm "didn't take"
+    const r = await applyTune("s", "agent-x", "model", "claude-haiku-4-5", fast);
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe("no-ack");
+    // proves we declined the menu to free the pane instead of leaving the agent stuck on it
+    expect(h.keys).toContain("Down");
   });
 });

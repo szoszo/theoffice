@@ -37,7 +37,17 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Acknowledgement wording, verified live against claude 2.1.220. */
 const ACK_OK = [/Set effort level to /i, /Set model to /i];
-const ACK_BAD = [/Invalid argument: /i, /Model '.*' not found/i];
+// "Kept model as X" is what the CLI prints when the Switch model? confirmation is declined — treat it
+// as a not-applied resolution (so a cancelled switch resolves instead of hanging to no-ack).
+const ACK_BAD = [/Invalid argument: /i, /Model '.*' not found/i, /Kept model as /i];
+
+/**
+ * A CROSS-model `/model` switch invalidates the cached conversation, so Claude Code interrupts with an
+ * interactive confirmation ("Switch model? ... 1. Yes, switch  2. No, go back") instead of acking
+ * immediately. Left unanswered it STRANDS the pane — the agent can't take its next turn. We detect the
+ * menu, confirm it, and (on timeout) cancel it so a no-ack never leaves an agent stuck on the prompt.
+ */
+const MODEL_SWITCH_MENU = /Switch model\?|Yes, switch/i;
 
 const clean = (line: string) => line.replace(/^\s*⎿\s*/, "").trim();
 
@@ -100,9 +110,18 @@ export async function applyTune(
     sendKey(socket, session, "Enter");
 
     const ackDeadline = Date.now() + t.ackWaitMs;
+    let menuConfirmed = false;
     for (;;) {
       await sleep(t.ackPollMs);
       const pane = capturePane(socket, session) ?? "";
+      // A cross-model switch pops the "Switch model?" confirmation instead of acking. Confirm it ONCE
+      // ("1. Yes, switch" is the default-highlighted option -> Enter selects it), then keep waiting for
+      // the "Set model to" ack. Without this the pane stalls on the menu and the agent is stranded.
+      if (!menuConfirmed && MODEL_SWITCH_MENU.test(pane)) {
+        sendKey(socket, session, "Enter");
+        menuConfirmed = true;
+        continue;
+      }
       if (pane !== before) {
         const ack = matchAck(pane);
         if (ack) {
@@ -113,6 +132,15 @@ export async function applyTune(
         }
       }
       if (Date.now() >= ackDeadline) {
+        // NEVER strand the pane on the confirmation menu: if it's still up, decline it (Down -> "2. No,
+        // go back" -> Enter) so the agent returns to its prior model and can take its next turn.
+        if (MODEL_SWITCH_MENU.test(pane)) {
+          sendKey(socket, session, "Down");
+          await sleep(t.settleMs);
+          sendKey(socket, session, "Enter");
+          logger.warn({ session, kind, value }, "tune menu not resolved — cancelled to unstrand the pane");
+          return { ok: false, reason: "no-ack" };
+        }
         logger.warn({ session, kind, value }, "tune not acknowledged — swallowed?");
         return { ok: false, reason: "no-ack" };
       }
