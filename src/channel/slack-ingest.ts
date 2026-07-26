@@ -327,8 +327,11 @@ export function startSlackIngest(cfg: EngineConfig): () => void {
       }
       const parsed = parseInbound(event, agent.slack!.botUserId);
       if (!parsed) return;
+      // SECURITY: the SAME allowed-sender gate covers DMs AND channel @-mentions (this handler is shared),
+      // so the new channel input surface can never bypass it — a non-allowed user's @-mention is dropped
+      // exactly like a non-allowed DM.
       if (!isAllowedSender(parsed.user, agent.allowFrom, ownerId)) {
-        logger.warn({ agent: agent.id, from: parsed.user }, "ignored DM from non-allowed user");
+        logger.warn({ agent: agent.id, from: parsed.user }, "ignored non-allowed sender (DM or channel @-mention)");
         return;
       }
       // Instant "I've seen this" feedback so the owner isn't left wondering — react

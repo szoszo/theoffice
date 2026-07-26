@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { parseInbound, prepareInboundDelivery, parseDeri6Signal } from "./slack-ingest.js";
+import { isAllowedSender } from "./access.js";
 
 describe("prepareInboundDelivery (non-owner sender identity + routing safety)", () => {
   // SECURITY: a non-owner allowed contact (e.g. Hanga via allowFrom) must never be mistaken for the owner,
@@ -215,5 +216,38 @@ describe("parseDeri6Signal (scoped bot-message exception — deri6 OCR + bill tr
     expect(parseDeri6Signal(signal({ text: "" }), sig)).toBeNull();
     expect(parseDeri6Signal({ type: "message", channel: sig.channelId, bot_id: "B1" }, sig)).toBeNull();
     expect(parseDeri6Signal(null, sig)).toBeNull();
+  });
+});
+
+// SECURITY GATE for the NEW channel input surface: an @-mention lets anyone in a shared channel reach an
+// agent, so the app_mention path MUST pass through the SAME allowed-sender gate as a DM and cannot bypass
+// it. This composes the two real functions EXACTLY as the shared handler does (parseInbound -> isAllowedSender,
+// slack-ingest.ts). RED-FIRST: without the app_mention port, parseInbound returns null for a mention, so an
+// allowed user's @-mention would be dropped (the "accepts owner/allow-listed" case fails) — i.e. the port is
+// required for a mention to reach the gate at all, and the gate then still rejects non-allowed senders.
+describe("app_mention auth gate (new channel surface can't bypass isAllowedSender)", () => {
+  const OWNER = "U_owner";
+  const EXT = "U_ext";
+  const BOT = "U_charly";
+  const mention = (user: string) => ({ type: "app_mention", channel: "C1", user, text: "<@U_charly> do a thing", ts: "9.9" });
+  // mirrors slack-ingest's shared handler: parse, then gate on the SENDER's id.
+  const handlerAccepts = (event: unknown, allowFrom: string[] | undefined) => {
+    const p = parseInbound(event, BOT);
+    return !!p && isAllowedSender(p.user, allowFrom, OWNER);
+  };
+
+  it("REJECTS a non-allowed user's channel @-mention (same drop as a non-allowed DM)", () => {
+    expect(handlerAccepts(mention("U_random"), undefined)).toBe(false); // not owner, no allowFrom
+    expect(handlerAccepts(mention(EXT), [])).toBe(false); // empty allowFrom
+    expect(handlerAccepts(mention("U_random"), [EXT])).toBe(false); // allow-listed someone else, not them
+  });
+
+  it("accepts the owner's and an allow-listed user's @-mention (feature still works for the right people)", () => {
+    expect(handlerAccepts(mention(OWNER), undefined)).toBe(true);
+    expect(handlerAccepts(mention(EXT), [EXT])).toBe(true);
+  });
+
+  it("parseInbound surfaces the MENTIONER as the sender, so the gate checks the real person (not the bot)", () => {
+    expect(parseInbound(mention("U_random"), BOT)?.user).toBe("U_random");
   });
 });
