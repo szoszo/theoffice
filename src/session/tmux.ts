@@ -143,12 +143,23 @@ export function capturePane(socket: string, name: string, opts: CaptureOpts = {}
  * Send literal text (no key interpretation). Returns whether tmux accepted it.
  *
  * The return value is LOAD-BEARING: prompts are typed in chunks, so a caller that discards it will
- * silently punch a hole in the middle of a message and submit the remains (kanban d6ada913 — an
- * inter-agent authorisation was deleted this way on 2026-08-01). A timed-out call returns code -1
- * via the TMUX_TIMEOUT_MS path above, which lands here as `false` rather than as a hang.
+ * silently punch a hole in the middle of a message and submit the remains. Two separate incidents,
+ * both silent: on 2026-07-30 exactly one 180-char burst vanished from an agent's status report, the
+ * two fragments were concatenated and two open items disappeared with nothing logged; on 2026-08-01
+ * an inter-agent authorisation was deleted the same way (kanban d6ada913). A timed-out call returns
+ * code -1 via the TMUX_TIMEOUT_MS path above, which lands here as `false` rather than as a hang.
+ * Callers must check this and either retry or fail loudly — never deliver a prompt with a hole in it.
+ *
+ * `--` terminates tmux's own option parsing. Without it a burst that happens to START with "-" is
+ * read as a flag and the whole burst is rejected ("invalid flag"), deterministically, for that
+ * text at that chunk offset. Retries cannot help: the same bytes fail the same way every time. On
+ * 2026-07-31 a memory preamble whose 180-char boundary landed on a "- (hot) ..." bullet wedged an
+ * agent for two hours — every delivery aborted at the same offset and the partially typed prompt
+ * piled up in the input box. The recall preamble emits exactly such bullets, so this is not
+ * hypothetical for this codebase.
  */
 export function sendText(socket: string, name: string, text: string): boolean {
-  return tmux(socket, ["send-keys", "-t", name, "-l", text]).code === 0;
+  return tmux(socket, ["send-keys", "-t", name, "-l", "--", text]).code === 0;
 }
 
 /** Send a named key / chord, e.g. "Enter", "C-u", "Escape". Returns whether tmux accepted it. */
