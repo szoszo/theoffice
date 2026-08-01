@@ -39,6 +39,23 @@ export const MIGRATIONS: Migration[] = [
     // occurrences missed while the engine was down. New table -> migration-only (NOT in SCHEMA_SQL, Model A).
     sql: `CREATE TABLE scheduler_state (k TEXT PRIMARY KEY, v INTEGER NOT NULL);`,
   },
+  {
+    version: 3,
+    name: "inbound_queue orphan tracking",
+    // Orphan-requeue (kanban aba29f60). A message handed to a session that then DIES is currently lost
+    // forever: 'delivered' is terminal on this table, so nothing can tell "the agent read it" from "the
+    // agent was OOM-killed three seconds later". Proven live 2026-08-01 — an owner message sat 36 minutes
+    // against a system that considered it handled.
+    //
+    // session_ref: WHICH session instance received it (tmux #{session_created}). Identity, not doneness —
+    //   doneness does not exist here. NULL on every pre-existing row, which is also the gate that keeps
+    //   the 2,084 historical orphans out of scope: no ref, no requeue, ever.
+    // requeues: PERSISTED redelivery counter enforcing the hard cap of one. Persisted rather than
+    //   in-memory precisely so an engine restart cannot silently reset it and reopen the loop — an
+    //   in-memory cap would have been a fresh silent-failure inside the fix for one.
+    sql: `ALTER TABLE inbound_queue ADD COLUMN session_ref TEXT;
+          ALTER TABLE inbound_queue ADD COLUMN requeues INTEGER NOT NULL DEFAULT 0;`,
+  },
 ];
 
 /** Highest known schema version (the baseline, or the max migration version). */
