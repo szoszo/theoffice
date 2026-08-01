@@ -67,7 +67,27 @@ async function isReady(socket: string, session: string): Promise<boolean> {
 
 export interface DeliveryResult {
   ok: boolean;
-  reason?: "not-ready" | "wedged" | "submit-give-up" | "no-session" | "send-failed";
+  reason?: "not-ready" | "wedged" | "submit-give-up" | "no-session" | "send-failed" | "dirty-pane";
+}
+
+/** Lines to assume a pre-existing draft might span when we have no way to know. */
+const PRE_CLEAR_LINES = 40;
+/** How many clear-then-verify rounds before we declare the pane dirty. */
+const CLEAR_VERIFY_ROUNDS = 3;
+
+/**
+ * Clear a parked draft and CONFIRM it is gone, because a blind clear is what let residue survive and
+ * be submitted later by an unrelated delivery (kanban b4802f1d). Returns false if the box still holds
+ * text after every round — the caller must then refuse to type rather than stack more on top.
+ */
+function clearDraftVerified(socket: string, session: string, lines: number): boolean {
+  for (let round = 0; round < CLEAR_VERIFY_ROUNDS; round++) {
+    clearInput(socket, session, lines);
+    const pane = capturePane(socket, session);
+    if (pane == null) return false; // cannot see the pane => cannot claim it is clean
+    if (detectPaneState(pane) !== "typing") return true;
+  }
+  return false;
 }
 
 /**
@@ -83,7 +103,13 @@ export async function deliverPrompt(socket: string, session: string, prompt: str
   if (pre == null) return { ok: false, reason: "not-ready" };
   const state = detectPaneState(pre);
   if (state === "error") return { ok: false, reason: "wedged" };
-  if (state === "typing") clearInput(socket, session); // remove a stray draft before sending
+  // Remove a stray draft before sending. VERIFIED, not fire-and-forget: an uncleared multi-line draft
+  // gets our text appended to it and submitted as one merged prompt (kanban b4802f1d). We do not know
+  // how many lines a pre-existing draft has, so clear generously and confirm.
+  if (state === "typing" && !clearDraftVerified(socket, session, PRE_CLEAR_LINES)) {
+    logger.error({ session }, "a parked draft could not be cleared — refusing to type behind it");
+    return { ok: false, reason: "dirty-pane" };
+  }
   if (state === "busy" || state === "unknown") return { ok: false, reason: "not-ready" };
 
   // Type the prompt in literal chunks. A chunk that tmux rejects (wedged pane, or the TMUX_TIMEOUT_MS
@@ -94,11 +120,17 @@ export async function deliverPrompt(socket: string, session: string, prompt: str
   // message is retried WHOLE instead of arriving corrupt.
   for (let i = 0; i < prompt.length; i += CHUNK) {
     if (!sendText(socket, session, prompt.slice(i, i + CHUNK))) {
-      clearInput(socket, session);
-      logger.warn(
-        { session, atChar: i, promptLen: prompt.length },
-        "send-keys chunk failed mid-prompt — cleared draft, delivery aborted (message NOT submitted)",
-      );
+      // Refusing to submit is NOT enough: whatever we already typed stays parked in the input box and
+      // the next delivery to press Enter submits it (kanban b4802f1d — six aborted copies plus an
+      // owner message arrived as one prompt). Clear what we typed and VERIFY the box is actually empty.
+      const linesTyped = (prompt.slice(0, i).match(/\n/g) ?? []).length;
+      const clean = clearDraftVerified(socket, session, linesTyped);
+      const at = { session, atChar: i, promptLen: prompt.length, linesTyped };
+      if (!clean) {
+        logger.error(at, "send-keys chunk failed AND the partial draft could not be cleared — pane is DIRTY; residue may be submitted by the next delivery");
+        return { ok: false, reason: "dirty-pane" };
+      }
+      logger.warn(at, "send-keys chunk failed mid-prompt — draft cleared and verified, delivery aborted (message NOT submitted)");
       return { ok: false, reason: "send-failed" };
     }
     if (i + CHUNK < prompt.length) await sleep(SETTLE_CHUNK_MS);

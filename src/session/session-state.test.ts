@@ -20,11 +20,12 @@ const h = vi.hoisted(() => ({
     stderr: string;
     error?: NodeJS.ErrnoException;
   },
+  spawnCount: 0,
 }));
 
-vi.mock("node:child_process", () => ({ spawnSync: () => h.result }));
+vi.mock("node:child_process", () => ({ spawnSync: () => { h.spawnCount++; return h.result; } }));
 
-import { sessionState, hasSession, sessionInstance } from "./tmux.js";
+import { sessionState, hasSession, sessionInstance, clearInput } from "./tmux.js";
 
 beforeEach(() => {
   h.result = { status: 0, stdout: "", stderr: "" };
@@ -111,5 +112,20 @@ describe("sessionInstance — identity, not mere existence", () => {
   it("present but with an unusable ref is UNKNOWN, not a guessed identity", () => {
     h.result = LS(["agent-x\t:"]); // the shape display-message would have produced for a dead session
     expect(sessionInstance("s", "agent-x")).toEqual({ state: "unknown", ref: null });
+  });
+});
+
+describe("clearInput — one C-u cannot clear a multi-line draft (kanban b4802f1d)", () => {
+  it("issues MORE THAN ONE send-keys when told the draft spans several lines", () => {
+    h.result = { status: 0, stdout: "", stderr: "" };
+    const before = h.spawnCount;
+    clearInput("s", "agent-x", 12);
+    expect(h.spawnCount - before).toBeGreaterThan(12);
+  });
+
+  it("still clears at least once when given no line count", () => {
+    const before = h.spawnCount;
+    clearInput("s", "agent-x");
+    expect(h.spawnCount - before).toBeGreaterThanOrEqual(2);
   });
 });

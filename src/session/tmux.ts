@@ -151,9 +151,19 @@ export function sendKey(socket: string, name: string, key: string): boolean {
   return tmux(socket, ["send-keys", "-t", name, key]).code === 0;
 }
 
-/** Clear any parked draft in the input box. */
-export function clearInput(socket: string, name: string): void {
-  sendKey(socket, name, "C-u");
+/**
+ * Clear a parked draft from the input box.
+ *
+ * C-u clears to the start of the LINE, so ONE press cannot clear a MULTI-LINE draft. That was the
+ * 2026-08-01 residue bug (kanban b4802f1d): an aborted delivery left ~12 of 13 lines parked, six
+ * aborts stacked six partial copies, and 77 minutes later an unrelated OWNER message typed into the
+ * same box and pressed Enter — submitting the whole pile as one prompt.
+ *
+ * `lines` is how many lines the caller may have left behind; we press C-u once per line plus one.
+ * The press count is best-effort — callers MUST verify with detectPaneState rather than trust it.
+ */
+export function clearInput(socket: string, name: string, lines = 1): void {
+  for (let i = 0; i <= Math.max(1, lines); i++) sendKey(socket, name, "C-u");
 }
 
 export interface NewSessionOpts {

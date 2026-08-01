@@ -26,6 +26,8 @@ const h = vi.hoisted(() => ({
   /** 0-based index of the chunk whose send-keys should fail; -1 = all succeed. */
   failChunkAt: -1,
   chunkCount: 0,
+  paneState: "idle" as string,
+  clearLines: [] as number[],
 }));
 
 vi.mock("./tmux.js", () => ({
@@ -44,12 +46,14 @@ vi.mock("./tmux.js", () => ({
     h.keys.push(key);
     return true;
   },
-  clearInput: () => {
+  clearInput: (_socket: string, _name: string, lines?: number) => {
     h.clears++;
+    h.clearLines.push(lines ?? 1);
   },
 }));
 vi.mock("./pane-state.js", () => ({
-  detectPaneState: () => "idle",
+  // Controllable: "idle" means the clear worked; "typing" means a draft is still parked.
+  detectPaneState: () => h.paneState,
   decideSubmitFollowup: () => "done",
 }));
 
@@ -57,6 +61,8 @@ import { deliverPrompt } from "./claude-runtime.js";
 
 /** Long enough to span several 180-char chunks. */
 const PROMPT = "abcdefghij".repeat(75); // 750 chars -> 5 chunks
+/** Newline-heavy, like a real bus message: a single C-u cannot clear this. */
+const MULTILINE = ("line of text here\n").repeat(60);
 const injected = () => h.sent.join("");
 
 beforeEach(() => {
@@ -65,6 +71,8 @@ beforeEach(() => {
   h.clears = 0;
   h.chunkCount = 0;
   h.failChunkAt = -1;
+  h.paneState = "idle";
+  h.clearLines.length = 0;
 });
 
 describe("deliverPrompt — a partially-typed prompt is never submitted", () => {
@@ -113,5 +121,52 @@ describe("deliverPrompt — a partially-typed prompt is never submitted", () => 
       await deliverPrompt("test", "agent-x", PROMPT);
       if (h.keys.includes("Enter")) expect(injected()).toBe(PROMPT);
     }
+  });
+});
+
+describe("aborting must leave the pane CLEAN, not merely unsubmitted (kanban b4802f1d)", () => {
+  it("tells clearInput HOW MANY LINES it typed — a 1-line clear cannot clear a multi-line draft", async () => {
+    // The live failure: 13-line prompt, single C-u, ~12 lines survived every abort.
+    h.failChunkAt = 3; // fail partway through a newline-heavy prompt
+    await deliverPrompt("test", "agent-x", MULTILINE);
+    expect(h.clearLines.length).toBeGreaterThan(0);
+    expect(Math.max(...h.clearLines)).toBeGreaterThan(1); // counted the newlines actually typed
+  });
+
+  it("passes a line count matching the newlines it actually typed, not a constant", async () => {
+    h.failChunkAt = 3;
+    await deliverPrompt("test", "agent-x", MULTILINE);
+    const typedLines = (MULTILINE.slice(0, 3 * 180).match(/\n/g) ?? []).length;
+    expect(h.clearLines[0]).toBe(typedLines);
+  });
+
+  it("reports 'dirty-pane' (not 'send-failed') when the draft CANNOT be cleared", async () => {
+    h.failChunkAt = 2;
+    h.paneState = "typing"; // every verify still sees parked text
+    const res = await deliverPrompt("test", "agent-x", PROMPT);
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe("dirty-pane");
+  });
+
+  it("still never presses Enter when the pane is left dirty", async () => {
+    h.failChunkAt = 2;
+    h.paneState = "typing";
+    await deliverPrompt("test", "agent-x", PROMPT);
+    expect(h.keys).not.toContain("Enter");
+  });
+
+  it("refuses to type BEHIND a pre-existing draft it cannot clear", async () => {
+    h.paneState = "typing"; // parked draft before we even start; clear never succeeds
+    const res = await deliverPrompt("test", "agent-x", PROMPT);
+    expect(res.reason).toBe("dirty-pane");
+    expect(h.sent.join("")).toBe(""); // nothing typed on top of the residue
+    expect(h.keys).not.toContain("Enter");
+  });
+
+  it("gives up after a bounded number of verify rounds instead of clearing forever", async () => {
+    h.failChunkAt = 1;
+    h.paneState = "typing";
+    await deliverPrompt("test", "agent-x", PROMPT);
+    expect(h.clears).toBeLessThanOrEqual(3); // CLEAR_VERIFY_ROUNDS, not unbounded
   });
 });
