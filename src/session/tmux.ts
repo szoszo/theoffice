@@ -49,8 +49,34 @@ export function sessionNameFor(agentId: string): string {
   return `agent-${agentId}`;
 }
 
+/**
+ * Three-way session probe. `hasSession` collapses the last two into `false`, which is the SAFE
+ * reading for "should I deliver?" (don't, if unsure) but the WRONG one for any decision that acts
+ * on a session being *gone*.
+ *
+ *   present — tmux confirmed the session exists (exit 0)
+ *   absent  — tmux confirmed it does not (exit 1; also covers "no server running", where every
+ *             session is genuinely gone)
+ *   unknown — we could not ask: the call failed, or was SIGKILLed by TMUX_TIMEOUT_MS (code -1)
+ *
+ * The distinction is load-bearing for orphan-requeue (kanban aba29f60): treating `unknown` as
+ * "dead" would re-deliver a message to an agent that is alive and currently working on it — the
+ * automated, fleet-wide version of the duplicate-delivery bug we hit by hand on 2026-08-01.
+ * Requeue on `absent` only. Exit codes verified empirically against tmux 3.x on this box.
+ */
+export type SessionState = "present" | "absent" | "unknown";
+
+export function sessionState(socket: string, name: string): SessionState {
+  const code = tmux(socket, ["has-session", "-t", name]).code;
+  if (code === 0) return "present";
+  if (code === 1) return "absent";
+  return "unknown";
+}
+
+/** True only when the session is CONFIRMED present. "Cannot tell" reads as false — safe for
+ *  gating delivery, unsafe for concluding an agent died. Use sessionState() for the latter. */
 export function hasSession(socket: string, name: string): boolean {
-  return tmux(socket, ["has-session", "-t", name]).code === 0;
+  return sessionState(socket, name) === "present";
 }
 
 export function listSessions(socket: string): string[] {
