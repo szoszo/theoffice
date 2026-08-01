@@ -7,13 +7,20 @@
 # Every one of those returns a plausible pid rather than an error, so the wrong answer looks exactly like
 # the right one and silently poisons the cgroup comparison that follows.
 #
-# So this script REFUSES rather than guesses. Every ambiguity is a hard exit, never a best guess:
-#   - server not found, or MORE THAN ONE match  -> exit 2
-#   - the pid's comm is not literally 'tmux: server' -> exit 2
-#   - the server owns ZERO sessions (an empty husk, e.g. a bare __keepalive) -> exit 2, because
-#     "it survived the restart" is meaningless for a server holding nothing. That is a FALSE ALL-CLEAR,
-#     which is worse than a false alarm.
-#   - a live pane does not actually parent to the server we selected -> exit 2
+# So this script REFUSES rather than guesses. Every ambiguity is a hard exit, never a best guess —
+# but "ambiguous" and "nothing at stake" are DIFFERENT answers and get different codes:
+#
+#   FLEET EXISTS, blast radius unreadable -> exit 2 (the caller must REFUSE):
+#     - MORE THAN ONE server matched the socket
+#     - the pid's comm is not literally 'tmux: server'
+#     - a live pane does not actually parent to the server we selected
+#     - a cgroup or the service's MainPID could not be read
+#
+#   NOTHING TO PROTECT -> exit 3 (the caller may proceed, safe BY CONSTRUCTION):
+#     - no 'tmux: server' found for this socket at all
+#     - the server owns ZERO real sessions (an empty husk, e.g. a bare __keepalive). Verifying that
+#       such a server "survived the restart" is meaningless — it holds nothing. That would be a
+#       FALSE ALL-CLEAR, which is worse than a false alarm, so it must never read as SAFE either.
 #
 # Usage: check-blast-radius.sh [socket] [service]
 #   socket : tmux socket name, or "default" for the unnamed one   (default: theoffice)
