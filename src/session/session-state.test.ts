@@ -24,7 +24,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock("node:child_process", () => ({ spawnSync: () => h.result }));
 
-import { sessionState, hasSession } from "./tmux.js";
+import { sessionState, hasSession, sessionInstance } from "./tmux.js";
 
 beforeEach(() => {
   h.result = { status: 0, stdout: "", stderr: "" };
@@ -73,5 +73,43 @@ describe("sessionState — present / absent / unknown are three different answer
     expect(dead).not.toBe(cannotTell);
     // and only one of them may ever authorise a requeue
     expect(dead).toBe("absent");
+  });
+});
+
+describe("sessionInstance — identity, not mere existence", () => {
+  const LS = (rows: string[]) => ({ status: 0, stdout: rows.join("\n") + "\n", stderr: "" });
+
+  it("returns the instance ref for a present session", () => {
+    h.result = LS(["agent-darryl\t$57:1785230052", "agent-marveen\t$58:1785577079"]);
+    expect(sessionInstance("s", "agent-marveen")).toEqual({ state: "present", ref: "$58:1785577079" });
+  });
+
+  it("a name that is simply not listed is ABSENT (list-sessions cannot invent a row)", () => {
+    h.result = LS(["agent-darryl\t$57:1785230052"]);
+    expect(sessionInstance("s", "agent-gone")).toEqual({ state: "absent", ref: null });
+  });
+
+  it("no server (exit 1) means every session is genuinely gone -> absent", () => {
+    h.result = { status: 1, stdout: "", stderr: "no server running" };
+    expect(sessionInstance("s", "agent-x")).toEqual({ state: "absent", ref: null });
+  });
+
+  it("a timed-out call is UNKNOWN — never absent, so it can never authorise a requeue", () => {
+    const err: NodeJS.ErrnoException = new Error("ETIMEDOUT");
+    err.code = "ETIMEDOUT";
+    h.result = { status: null, stdout: "", stderr: "", error: err };
+    expect(sessionInstance("s", "agent-x")).toEqual({ state: "unknown", ref: null });
+  });
+
+  it("a relaunched agent yields a DIFFERENT ref — the 9766 case that existence checks miss", () => {
+    h.result = LS(["agent-marveen\t$58:1785577079"]);
+    const after = sessionInstance("s", "agent-marveen");
+    expect(after.state).toBe("present");
+    expect(after.ref).not.toBe("$41:1785500000"); // the pre-OOM instance
+  });
+
+  it("present but with an unusable ref is UNKNOWN, not a guessed identity", () => {
+    h.result = LS(["agent-x\t:"]); // the shape display-message would have produced for a dead session
+    expect(sessionInstance("s", "agent-x")).toEqual({ state: "unknown", ref: null });
   });
 });

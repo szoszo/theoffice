@@ -73,6 +73,39 @@ export function sessionState(socket: string, name: string): SessionState {
   return "unknown";
 }
 
+/** A session's state plus, when present, a stable id for THIS INSTANCE of it. */
+export interface SessionInstance {
+  state: SessionState;
+  /** `$<session_id>:<session_created>`; null unless state === "present". */
+  ref: string | null;
+}
+
+/**
+ * Identify which INSTANCE of a session is running. Orphan-requeue (kanban aba29f60) keys on this
+ * rather than on mere existence: after an OOM relaunch the agent is "present" again but is a
+ * DIFFERENT instance holding none of the context, which is exactly how owner msg 9766 was lost.
+ *
+ * Deliberately uses list-sessions, NOT `display-message -p -t <name>`. display-message returns
+ * EXIT 0 AND A PLAUSIBLE-LOOKING REF (":") for a session that does not exist — a confidently wrong
+ * answer of the same shape as the pgrep traps, and it would have minted a valid-looking instance id
+ * for a dead agent. list-sessions can only report sessions that actually exist. Verified against
+ * tmux on this box: server absent -> exit 1 (every session genuinely gone), missing name -> no row.
+ */
+export function sessionInstance(socket: string, name: string): SessionInstance {
+  const r = tmux(socket, ["list-sessions", "-F", "#{session_name}\t#{session_id}:#{session_created}"]);
+  if (r.code === 1) return { state: "absent", ref: null }; // no server running => all sessions gone
+  if (r.code !== 0) return { state: "unknown", ref: null }; // -1 = timed out / could not ask
+  for (const line of r.stdout.split("\n")) {
+    const tab = line.indexOf("\t");
+    if (tab < 0) continue;
+    if (line.slice(0, tab) !== name) continue;
+    const ref = line.slice(tab + 1).trim();
+    // Present but no usable ref = we cannot identify the instance; never guess one.
+    return ref && ref !== ":" ? { state: "present", ref } : { state: "unknown", ref: null };
+  }
+  return { state: "absent", ref: null };
+}
+
 /** True only when the session is CONFIRMED present. "Cannot tell" reads as false — safe for
  *  gating delivery, unsafe for concluding an agent died. Use sessionState() for the latter. */
 export function hasSession(socket: string, name: string): boolean {
