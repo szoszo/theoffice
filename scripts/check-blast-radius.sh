@@ -18,13 +18,22 @@
 # Usage: check-blast-radius.sh [socket] [service]
 #   socket : tmux socket name, or "default" for the unnamed one   (default: theoffice)
 #   service: systemd --user unit that would be restarted          (default: theoffice.service)
-# Exit: 0 = SAFE (fleet survives), 1 = UNSAFE (restart kills the fleet), 2 = CANNOT DETERMINE.
+# Exit: 0 = SAFE (fleet survives) | 1 = UNSAFE (restart kills the fleet)
+#       2 = A FLEET EXISTS but its blast radius is unreadable -> caller should REFUSE
+#       3 = NOTHING TO PROTECT (no server / empty husk) -> caller may proceed, safe by construction
 set -uo pipefail
 
 SOCKET="${1:-theoffice}"
 SERVICE="${2:-theoffice.service}"
 
-die() { printf 'CANNOT DETERMINE: %s\n' "$1" >&2; exit 2; }
+# TWO different worlds were previously collapsed into exit 2 (Michael, 2026-08-01):
+#   exit 3 = NOTHING TO PROTECT (no server, or an empty husk). Proceeding is safe BY CONSTRUCTION.
+#   exit 2 = A FLEET EXISTS and its blast radius is unreadable. Sessions are live, someone may be
+#            mid-turn, and we cannot tell whether a restart kills them. That is the outage the gate
+#            exists to prevent, so it must REFUSE, not warn.
+# Callers key on the exit code, never on grepping this text — matching your own output is brittle.
+die()     { printf 'CANNOT DETERMINE: %s\n' "$1" >&2; exit 2; }
+nothing() { printf 'NOTHING TO PROTECT: %s\n' "$1" >&2; exit 3; }
 
 # --- 1. Select the server BY SOCKET, matching on comm, never on a bare args grep -------------------
 # `ps -eo pid,comm,args` then filter: comm must be exactly "tmux: server". This cannot match the
@@ -53,7 +62,7 @@ mapfile -t CANDIDATES < <(
   done
 )
 
-[ "${#CANDIDATES[@]}" -eq 0 ] && die "no 'tmux: server' found for socket '$SOCKET'"
+[ "${#CANDIDATES[@]}" -eq 0 ] && nothing "no 'tmux: server' found for socket '$SOCKET' — no fleet to lose"
 [ "${#CANDIDATES[@]}" -gt 1 ] && die "MULTIPLE servers matched socket '$SOCKET': ${CANDIDATES[*]} — refusing to guess"
 SRV="${CANDIDATES[0]}"
 
@@ -66,7 +75,7 @@ if [ "$SOCKET" = "default" ]; then TM=(env -u TMUX tmux); else TM=(tmux -L "$SOC
 mapfile -t SESSIONS < <("${TM[@]}" list-sessions -F '#{session_name}' 2>/dev/null)
 REAL=0
 for s in "${SESSIONS[@]}"; do case "$s" in __keepalive) ;; *) REAL=$((REAL+1)) ;; esac; done
-[ "$REAL" -eq 0 ] && die "server $SRV on '$SOCKET' owns no real sessions (only: ${SESSIONS[*]:-none}) — verifying its survival would prove nothing about any fleet"
+[ "$REAL" -eq 0 ] && nothing "server $SRV on '$SOCKET' owns no real sessions (only: ${SESSIONS[*]:-none}) — nothing to lose in a restart"
 
 # --- 4. Parent cross-check: a live pane must genuinely parent to the server we picked --------------
 FIRST=""
