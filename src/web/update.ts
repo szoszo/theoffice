@@ -5,9 +5,12 @@ import { REPO_ROOT } from "../config.js";
 import { getDb } from "../db/index.js";
 import { log } from "../logger.js";
 import { recordSetupNotices } from "./setup-notices.js";
+import { checkRestartSafety } from "./restart-safety.js";
 
 const logger = log("update");
 const BACKUPS_TO_KEEP = 5;
+/** The unit this engine runs as — restarted post-update, and the one the blast-radius gate checks. */
+const SERVICE_UNIT = "theoffice.service";
 
 function git(args: string[]): string {
   return execFileSync("git", ["-C", REPO_ROOT, ...args], { encoding: "utf8" });
@@ -173,10 +176,26 @@ export function applyUpdate(opts?: { discardLocal?: boolean }): {
   const tenantRoot = process.env.OFFICE_TENANT_ROOT ?? join(REPO_ROOT, "tenant");
   recordSetupNotices(tenantRoot, REPO_ROOT, preHead);
 
+  // MECHANICAL pre-restart gate. If this service and the tmux server share a cgroup, `systemctl restart`
+  // SIGTERMs the whole group and every agent session dies with it. The manual version of this check
+  // produced three confidently-wrong answers in one day, so the update path runs it itself rather than
+  // relying on whoever is deploying to remember. Only a PROVEN-unsafe verdict blocks; "cannot determine"
+  // proceeds, because a box with no running fleet must still be updatable.
+  const safety = checkRestartSafety(REPO_ROOT, process.env.OFFICE_TMUX_SOCKET ?? "theoffice", SERVICE_UNIT);
+  out.push(safety.reason);
+  if (!safety.proceed) {
+    logger.error({ reason: safety.reason }, "post-update restart REFUSED — would kill the agent fleet");
+    out.push(
+      `\n!! Code is updated and built, but the engine was NOT RESTARTED, so the RUNNING process is still the old one.\n` +
+        `   This is deliberate: restarting would have killed every agent session. Fix the unit, then restart manually.`,
+    );
+    return { ok: false, output: out.join("\n") };
+  }
+
   // restart shortly after we've returned the response — ONLY on success
   setTimeout(() => {
     try {
-      execFileSync("systemctl", ["--user", "restart", "theoffice.service"]);
+      execFileSync("systemctl", ["--user", "restart", SERVICE_UNIT]);
     } catch (e) {
       logger.error({ e }, "post-update restart failed");
     }
