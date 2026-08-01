@@ -20,10 +20,13 @@ vi.mock("./tmux.js", () => ({
   newSession: () => h.newSessionOk, // controllable: true = fresh session created, false = already existed
   hasSession: () => true,
   capturePane: () => "PANE",
+  // Must return true: sendText reports whether tmux accepted the chunk, and deliverPrompt now aborts
+  // the delivery on a falsy result rather than submitting a partially-typed prompt (kanban d6ada913).
   sendText: (_socket: string, _name: string, text: string) => {
     h.sent.push(text);
+    return true;
   },
-  sendKey: () => {},
+  sendKey: () => true,
   clearInput: () => {},
 }));
 vi.mock("./pane-state.js", () => ({

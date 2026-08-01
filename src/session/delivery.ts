@@ -2,7 +2,7 @@ import type { QueuedItem } from "./runtime.js";
 
 /**
  * Synthetic system-signal reply_user sentinels: they arrive source='channel' but are NOT from the human
- * owner (the deri6 ingest exception — OCR + bill triggers). Kept in one set so frameForDelivery, the
+ * owner (the rental ingest exception — OCR + bill triggers). Kept in one set so frameForDelivery, the
  * drift-detector and the stop-guard all agree on what is and isn't an owner message. When you add a new
  * signal type, add its reply_user in ALL THREE places (they live in two repos — this set is the engine
  * copy; the other two are agent-dir scripts OUTSIDE the engine repo):

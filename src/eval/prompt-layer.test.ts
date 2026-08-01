@@ -41,7 +41,7 @@ describe("checkTenantLeaks", () => {
   });
   it("flags a tenant email", () => {
     // (the owner name is a substring of the email, so this legitimately trips both the email and the name)
-    expect(checkTenantLeaks("x", "mail k.szoszo@gmail.com").some((i) => i.message.includes("k.szoszo@gmail.com"))).toBe(true);
+    expect(checkTenantLeaks("x", "mail owner@example.com").some((i) => i.message.includes("owner@example.com"))).toBe(true);
   });
   it("does NOT false-positive an agent-id embedded in an unrelated word", () => {
     // "pam" inside "pamphlet", "jim" inside "jimmy-rig" — word boundaries must hold

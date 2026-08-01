@@ -29,7 +29,7 @@ export interface QueuedItem {
   reply_channel: string | null;
   /**
    * Who the reply routes to. Normally the owner's Slack user id. A few synthetic system senders
-   * (e.g. the deri6 OCR trigger, reply_user='ocr-signal') arrive source='channel' but are NOT the
+   * (e.g. the rental OCR trigger, reply_user='ocr-signal') arrive source='channel' but are NOT the
    * human owner — see frameForDelivery. Present at runtime (listQueued selects it); typed here so the
    * runtimes can tell an owner message apart from a system signal.
    */

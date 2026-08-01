@@ -27,7 +27,7 @@ export const TENANT_IDENTIFIERS: string[] = [
   // known agent-id literals
   "marveen", "dwight", "toby", "jim", "pam", "cfo", "pete", "ryan", "clark", "darryl",
   // tenant email(s)
-  "k.szoszo@gmail.com",
+  "owner@example.com",
 ];
 
 /** Absolute / home-relative install paths that leak a machine-specific layout into a shipped artifact. */

@@ -75,14 +75,21 @@ export function capturePane(socket: string, name: string, opts: CaptureOpts = {}
   return r.code === 0 ? r.stdout : null;
 }
 
-/** Send literal text (no key interpretation). */
-export function sendText(socket: string, name: string, text: string): void {
-  tmux(socket, ["send-keys", "-t", name, "-l", text]);
+/**
+ * Send literal text (no key interpretation). Returns whether tmux accepted it.
+ *
+ * The return value is LOAD-BEARING: prompts are typed in chunks, so a caller that discards it will
+ * silently punch a hole in the middle of a message and submit the remains (kanban d6ada913 — an
+ * inter-agent authorisation was deleted this way on 2026-08-01). A timed-out call returns code -1
+ * via the TMUX_TIMEOUT_MS path above, which lands here as `false` rather than as a hang.
+ */
+export function sendText(socket: string, name: string, text: string): boolean {
+  return tmux(socket, ["send-keys", "-t", name, "-l", text]).code === 0;
 }
 
-/** Send a named key / chord, e.g. "Enter", "C-u", "Escape". */
-export function sendKey(socket: string, name: string, key: string): void {
-  tmux(socket, ["send-keys", "-t", name, key]);
+/** Send a named key / chord, e.g. "Enter", "C-u", "Escape". Returns whether tmux accepted it. */
+export function sendKey(socket: string, name: string, key: string): boolean {
+  return tmux(socket, ["send-keys", "-t", name, key]).code === 0;
 }
 
 /** Clear any parked draft in the input box. */

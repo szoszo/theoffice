@@ -258,7 +258,7 @@ WHAT THE SYSTEM ALREADY DID — no data lost
 3. Restarted all ${d.restarted.length} enabled agents (clean idle panes). The BUS_BREAKER circuit breaker is active.
 
 YOUR TASK NOW
-a) READ ${backupDir}/QUEUE-DIGEST.md (open the JSON dumps for detail). Note any REAL in-flight work that got cleared so nothing important is silently dropped (owner messages, watering/deri6/finance items, etc.).
+a) READ ${backupDir}/QUEUE-DIGEST.md (open the JSON dumps for detail). Note any REAL in-flight work that got cleared so nothing important is silently dropped (owner messages, watering/rental/finance items, etc.).
 b) Send ${owner} a SHORT plain-language summary on Slack (your normal owner DM): (1) what happened / root cause, (2) that the full queue is saved at ${backupDir} and the queue is clean + all agents restarted, (3) a brief bulleted list of anything still needing a decision or that must be redone, (4) that you are standing by for instructions.
 c) Then STOP and WAIT for ${owner}'s instructions.
 

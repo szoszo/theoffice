@@ -66,7 +66,7 @@ export interface EngineConfig {
   owner: OwnerConfig;
   channel: ChannelConfig;
   /**
-   * Optional scoped OCR trigger (deri6 tenant portal). When set, a bot message in `channelId` carrying
+   * Optional scoped OCR trigger (rental tenant portal). When set, a bot message in `channelId` carrying
    * the matching `secret` (and a valid UUID) is the ONLY bot message accepted by the Slack ingest — routed
    * as a data-only re-OCR wake to `agentId`. Unset = the feature is inert and the bot-drop is unchanged.
    */

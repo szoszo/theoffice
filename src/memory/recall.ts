@@ -8,7 +8,7 @@ const MAX_CONTENT_CHARS = 500; // truncate any single memory so one entry can't 
 // so an unbounded preamble (measured 30KB+ for a memory-heavy agent, ~100KB worst-case) both stresses
 // that fragile path AND floods the agent's context every prime. Budget a few KB (~1.5k tokens) in strict
 // priority — active work (hot) first, then stable facts (warm), then message-topical (cold/shared). The
-// long tail stays reachable via the on-demand memory-search API. (Szoszo's "don't overload us" guardrail.)
+// long tail stays reachable via the on-demand memory-search API. (the owner's "don't overload us" guardrail.)
 export const PREAMBLE_MAX_CHARS = 6000;
 
 function line(r: MemoryRow): string {

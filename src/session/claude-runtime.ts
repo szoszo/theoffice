@@ -67,7 +67,7 @@ async function isReady(socket: string, session: string): Promise<boolean> {
 
 export interface DeliveryResult {
   ok: boolean;
-  reason?: "not-ready" | "wedged" | "submit-give-up" | "no-session";
+  reason?: "not-ready" | "wedged" | "submit-give-up" | "no-session" | "send-failed";
 }
 
 /**
@@ -86,9 +86,21 @@ export async function deliverPrompt(socket: string, session: string, prompt: str
   if (state === "typing") clearInput(socket, session); // remove a stray draft before sending
   if (state === "busy" || state === "unknown") return { ok: false, reason: "not-ready" };
 
-  // type the prompt in literal chunks
+  // Type the prompt in literal chunks. A chunk that tmux rejects (wedged pane, or the TMUX_TIMEOUT_MS
+  // kill) MUST abort the whole delivery: carrying on would leave a CHUNK-sized hole in the middle of the
+  // message, and the Enter below would then submit the mutilated text and mark it delivered. That is
+  // exactly how an inter-agent authorisation was silently deleted on 2026-08-01 (kanban d6ada913).
+  // Clear the partial draft and fail — deliverClaude requeues every reason except "wedged", so the
+  // message is retried WHOLE instead of arriving corrupt.
   for (let i = 0; i < prompt.length; i += CHUNK) {
-    sendText(socket, session, prompt.slice(i, i + CHUNK));
+    if (!sendText(socket, session, prompt.slice(i, i + CHUNK))) {
+      clearInput(socket, session);
+      logger.warn(
+        { session, atChar: i, promptLen: prompt.length },
+        "send-keys chunk failed mid-prompt — cleared draft, delivery aborted (message NOT submitted)",
+      );
+      return { ok: false, reason: "send-failed" };
+    }
     if (i + CHUNK < prompt.length) await sleep(SETTLE_CHUNK_MS);
   }
   await sleep(SETTLE_BEFORE_ENTER_MS);

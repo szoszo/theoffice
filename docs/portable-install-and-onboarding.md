@@ -37,7 +37,7 @@ applyUpdate already has `preHead`. After a SUCCESSFUL pull+build, compute `git d
 ### Delivery to mainAgentId: the inbound QUEUE (enqueueInbound), NOT the first-message preamble
 Justification: an engine restart leaves agent tmux sessions ALIVE (decoupled cgroup), so `needsPrime`/firstMessagePreamble does NOT fire — the preamble would silently no-op post-update. The inbound queue is the reliable, delivery-confirmed path that already handles a busy main agent (waits for idle). In-process `enqueueInbound` (not an HTTP self-call) since this runs inside the engine at boot. `source:"system"` so it is framed as a framework message, content-as-data on receipt.
 
-OFFER_TEXT (offer-first, Szoszo-confirmed — never silent auto-install): "Update applied. New capability *<cap>* is available but not installed. It <one-line from manifest>. Want me to set it up? I can run its installer (`<install_cmd>`) and walk you through it. Say yes to install, or dismiss to skip." The main agent asks the OWNER, and on yes runs install.sh; on no, dismisses.
+OFFER_TEXT (offer-first, the owner-confirmed — never silent auto-install): "Update applied. New capability *<cap>* is available but not installed. It <one-line from manifest>. Want me to set it up? I can run its installer (`<install_cmd>`) and walk you through it. Say yes to install, or dismiss to skip." The main agent asks the OWNER, and on yes runs install.sh; on no, dismisses.
 
 ### Once-only + dismissible marker: `$TENANT/store/setup-notices.json`
 `{ "<cap>": { "notice_hash": "<sha>", "state": "notified|installed|dismissed", "at": <ts> } }`.
