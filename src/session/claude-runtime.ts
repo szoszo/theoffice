@@ -5,7 +5,7 @@ import type { EngineConfig, AgentDef } from "../types.js";
 import { log } from "../logger.js";
 import { capturePane, clearInput, hasSession, newSession, sendKey, sendText, sessionNameFor } from "./tmux.js";
 import { withPaneLock } from "./pane-lock.js";
-import { detectPaneState, decideSubmitFollowup } from "./pane-state.js";
+import { detectPaneState, decideSubmitFollowup, isReadyForPrompt } from "./pane-state.js";
 import { writeAgentSettings } from "./profile.js";
 import { ensureFolderTrusted } from "./trust.js";
 import { markDelivering, markDelivered, markFailed, requeue } from "../queue/index.js";
@@ -74,18 +74,29 @@ export interface DeliveryResult {
 const PRE_CLEAR_LINES = 40;
 /** How many clear-then-verify rounds before we declare the pane dirty. */
 const CLEAR_VERIFY_ROUNDS = 3;
+/** Settle time after sending C-u before capturing, so we read the re-rendered pane not a transient one. */
+const CLEAR_SETTLE_MS = 250;
 
 /**
  * Clear a parked draft and CONFIRM it is gone, because a blind clear is what let residue survive and
  * be submitted later by an unrelated delivery (kanban b4802f1d). Returns false if the box still holds
  * text after every round — the caller must then refuse to type rather than stack more on top.
  */
-function clearDraftVerified(socket: string, session: string, lines: number): boolean {
+async function clearDraftVerified(socket: string, session: string, lines: number): Promise<boolean> {
   for (let round = 0; round < CLEAR_VERIFY_ROUNDS; round++) {
     clearInput(socket, session, lines);
+    // Let the TUI actually process the keys and re-render. Without this we capture mid-render and
+    // read a transient state rather than the settled one.
+    await sleep(CLEAR_SETTLE_MS);
     const pane = capturePane(socket, session);
     if (pane == null) return false; // cannot see the pane => cannot claim it is clean
-    if (detectPaneState(pane) !== "typing") return true;
+    // ONLY an explicitly idle pane counts as clean. The first version asked `!== "typing"`, which
+    // silently accepted "busy", "unknown" and "error" as proof of cleanliness — and after typing
+    // thousands of chars the pane is ALWAYS mid-render, i.e. "busy". That is why 12 of 12 clears
+    // "verified clean" on 2026-08-01 while residue survived and was submitted behind an owner
+    // message. Treating cannot-tell as fine is the same mistake this whole fix exists to prevent;
+    // I made it inside the fix for it.
+    if (isReadyForPrompt(pane)) return true;
   }
   return false;
 }
@@ -106,7 +117,7 @@ export async function deliverPrompt(socket: string, session: string, prompt: str
   // Remove a stray draft before sending. VERIFIED, not fire-and-forget: an uncleared multi-line draft
   // gets our text appended to it and submitted as one merged prompt (kanban b4802f1d). We do not know
   // how many lines a pre-existing draft has, so clear generously and confirm.
-  if (state === "typing" && !clearDraftVerified(socket, session, PRE_CLEAR_LINES)) {
+  if (state === "typing" && !(await clearDraftVerified(socket, session, PRE_CLEAR_LINES))) {
     logger.error({ session }, "a parked draft could not be cleared — refusing to type behind it");
     return { ok: false, reason: "dirty-pane" };
   }
@@ -124,7 +135,7 @@ export async function deliverPrompt(socket: string, session: string, prompt: str
       // the next delivery to press Enter submits it (kanban b4802f1d — six aborted copies plus an
       // owner message arrived as one prompt). Clear what we typed and VERIFY the box is actually empty.
       const linesTyped = (prompt.slice(0, i).match(/\n/g) ?? []).length;
-      const clean = clearDraftVerified(socket, session, linesTyped);
+      const clean = await clearDraftVerified(socket, session, linesTyped);
       const at = { session, atChar: i, promptLen: prompt.length, linesTyped };
       if (!clean) {
         logger.error(at, "send-keys chunk failed AND the partial draft could not be cleared — pane is DIRTY; residue may be submitted by the next delivery");

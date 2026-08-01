@@ -27,6 +27,8 @@ const h = vi.hoisted(() => ({
   failChunkAt: -1,
   chunkCount: 0,
   paneState: "idle" as string,
+  /** What the pane reports AFTER a chunk fails — live, it is mid-render i.e. "busy". */
+  paneStateAfterFail: null as string | null,
   clearLines: [] as number[],
 }));
 
@@ -38,7 +40,10 @@ vi.mock("./tmux.js", () => ({
   sendText: (_socket: string, _name: string, text: string) => {
     const isFail = h.chunkCount === h.failChunkAt;
     h.chunkCount++;
-    if (isFail) return false; // tmux returned non-zero / timed out
+    if (isFail) {
+      if (h.paneStateAfterFail != null) h.paneState = h.paneStateAfterFail;
+      return false; // tmux returned non-zero / timed out
+    }
     h.sent.push(text);
     return true;
   },
@@ -54,6 +59,8 @@ vi.mock("./tmux.js", () => ({
 vi.mock("./pane-state.js", () => ({
   // Controllable: "idle" means the clear worked; "typing" means a draft is still parked.
   detectPaneState: () => h.paneState,
+  // ONLY idle counts as clean — busy/unknown must NOT pass the clear-verify.
+  isReadyForPrompt: () => h.paneState === "idle",
   decideSubmitFollowup: () => "done",
 }));
 
@@ -72,6 +79,7 @@ beforeEach(() => {
   h.chunkCount = 0;
   h.failChunkAt = -1;
   h.paneState = "idle";
+  h.paneStateAfterFail = null;
   h.clearLines.length = 0;
 });
 
@@ -168,5 +176,31 @@ describe("aborting must leave the pane CLEAN, not merely unsubmitted (kanban b48
     h.paneState = "typing";
     await deliverPrompt("test", "agent-x", PROMPT);
     expect(h.clears).toBeLessThanOrEqual(3); // CLEAR_VERIFY_ROUNDS, not unbounded
+  });
+});
+
+describe("the clear-verify must accept ONLY an idle pane (regression: 12/12 false 'clean')", () => {
+  it("a BUSY pane is NOT proof the draft was cleared", async () => {
+    // The live regression: the pane is idle when we start, but after typing thousands of chars it is
+    // mid-render, i.e. "busy". The first version asked `!== "typing"`, so busy read as CLEAN and
+    // residue escaped 12 times out of 12 while reporting success.
+    h.failChunkAt = 2;
+    h.paneStateAfterFail = "busy";
+    const res = await deliverPrompt("test", "agent-x", PROMPT);
+    expect(res.reason).toBe("dirty-pane");
+  });
+
+  it("an UNKNOWN pane is NOT proof the draft was cleared", async () => {
+    h.failChunkAt = 2;
+    h.paneStateAfterFail = "unknown";
+    const res = await deliverPrompt("test", "agent-x", PROMPT);
+    expect(res.reason).toBe("dirty-pane");
+  });
+
+  it("only an IDLE pane lets the abort report a clean send-failed", async () => {
+    h.failChunkAt = 2;
+    h.paneState = "idle";
+    const res = await deliverPrompt("test", "agent-x", PROMPT);
+    expect(res.reason).toBe("send-failed");
   });
 });
