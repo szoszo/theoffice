@@ -214,3 +214,35 @@ describe("the clear-verify demands PROVABLE emptiness (regression: 24/24 false '
     expect(h.keys).not.toContain("Enter");
   });
 });
+
+describe("pre-send guard must ask PROVABLE EMPTINESS, not the classifier (Michael's audit)", () => {
+  it("residue classified as IDLE still triggers a clear — the gap that skipped it entirely", async () => {
+    // The exact live scenario: a tall parked draft makes liveInputBox return null, so detectPaneState
+    // answers "idle" — NOT "typing". The old guard keyed on state === "typing", so in the one case
+    // that caused all three incidents it never even attempted a clear and typed behind the residue.
+    h.paneState = "idle";
+    h.boxEmpty = false; // residue present, and the clear can never prove it gone
+    const res = await deliverPrompt("test", "agent-x", PROMPT);
+    expect(res.reason).toBe("dirty-pane");
+    expect(h.clears).toBeGreaterThan(0); // it TRIED to clear rather than skipping
+    expect(h.sent.join("")).toBe(""); // and typed nothing on top of the residue
+    expect(h.keys).not.toContain("Enter");
+  });
+
+  it("a provably empty box proceeds normally with no clearing at all", async () => {
+    h.paneState = "idle";
+    h.boxEmpty = true;
+    const res = await deliverPrompt("test", "agent-x", PROMPT);
+    expect(res.ok).toBe(true);
+    expect(h.clears).toBe(0); // no pointless C-u into a clean pane
+    expect(injected()).toBe(PROMPT);
+  });
+
+  it("a BUSY pane returns not-ready WITHOUT sending C-u into a working agent", async () => {
+    h.paneState = "busy";
+    h.boxEmpty = false; // would otherwise trigger a clear
+    const res = await deliverPrompt("test", "agent-x", PROMPT);
+    expect(res.reason).toBe("not-ready");
+    expect(h.clears).toBe(0); // busy check runs FIRST, deliberately
+  });
+});

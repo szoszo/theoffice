@@ -57,6 +57,10 @@ function writeReplyContext(cfg: EngineConfig, agentId: string, channel: string):
  * Double-sampled readiness: capture twice with a small gap; ready only if BOTH
  * frames classify idle. Catches the one-frame footer gap right after a submit.
  */
+// NOTE: "ready" here means the pane classifies as idle TWICE. It is NOT evidence that the input box
+// is empty — a tall parked draft makes liveInputBox return null and detectPaneState answer "idle", so
+// both samples agree while residue sits in the box (kanban b4802f1d). Use inputBoxProvablyEmpty when
+// the question is "is the box clear"; this function only answers "has the pane settled".
 async function isReady(socket: string, session: string): Promise<boolean> {
   const a = capturePane(socket, session);
   if (a == null || detectPaneState(a) !== "idle") return false;
@@ -90,12 +94,6 @@ async function clearDraftVerified(socket: string, session: string, lines: number
     await sleep(CLEAR_SETTLE_MS);
     const pane = capturePane(socket, session);
     if (pane == null) return false; // cannot see the pane => cannot claim it is clean
-    // ONLY an explicitly idle pane counts as clean. The first version asked `!== "typing"`, which
-    // silently accepted "busy", "unknown" and "error" as proof of cleanliness — and after typing
-    // thousands of chars the pane is ALWAYS mid-render, i.e. "busy". That is why 12 of 12 clears
-    // "verified clean" on 2026-08-01 while residue survived and was submitted behind an owner
-    // message. Treating cannot-tell as fine is the same mistake this whole fix exists to prevent;
-    // I made it inside the fix for it.
     // PROVABLY empty, not merely "not classified as typing". detectPaneState reports idle when the
     // input box is too tall to be visible in the capture — which is exactly the large-residue case —
     // so asking it here produced 24 false "clean"s in a row. Clearing shrinks the box, so this
@@ -118,14 +116,19 @@ export async function deliverPrompt(socket: string, session: string, prompt: str
   if (pre == null) return { ok: false, reason: "not-ready" };
   const state = detectPaneState(pre);
   if (state === "error") return { ok: false, reason: "wedged" };
-  // Remove a stray draft before sending. VERIFIED, not fire-and-forget: an uncleared multi-line draft
-  // gets our text appended to it and submitted as one merged prompt (kanban b4802f1d). We do not know
-  // how many lines a pre-existing draft has, so clear generously and confirm.
-  if (state === "typing" && !(await clearDraftVerified(socket, session, PRE_CLEAR_LINES))) {
-    logger.error({ session }, "a parked draft could not be cleared — refusing to type behind it");
+  // Busy/unknown FIRST, so the clear below only ever runs against an idle-or-typing pane. Sending C-u
+  // into an agent that is mid-turn is not something we want to do to discover the box is fine.
+  if (state === "busy" || state === "unknown") return { ok: false, reason: "not-ready" };
+
+  // Remove a stray draft before sending. Ask whether the box is PROVABLY EMPTY — do NOT ask whether the
+  // pane classifies as "typing". A tall residue pushes the box's top separator off the captured pane, so
+  // liveInputBox returns null and detectPaneState answers "idle": the exact scenario behind all three
+  // b4802f1d incidents would SKIP the clear entirely and type behind the residue. Same inversion as the
+  // abort path, which was fixed first only because it happened to know its own line count.
+  if (!inputBoxProvablyEmpty(pre) && !(await clearDraftVerified(socket, session, PRE_CLEAR_LINES))) {
+    logger.error({ session }, "input box is not provably empty and could not be cleared — refusing to type behind it");
     return { ok: false, reason: "dirty-pane" };
   }
-  if (state === "busy" || state === "unknown") return { ok: false, reason: "not-ready" };
 
   // Type the prompt in literal chunks. A chunk that tmux rejects (wedged pane, or the TMUX_TIMEOUT_MS
   // kill) MUST abort the whole delivery: carrying on would leave a CHUNK-sized hole in the middle of the

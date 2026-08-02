@@ -324,6 +324,9 @@ async function handleApi(
           state = isCodexBusy(a.id) ? "busy" : "idle";
         } else {
           const pane = capturePane(cfg.tmux.socket, session);
+          // Shown to a human debugging the fleet. Beware: this reports "idle" when a TALL draft is
+          // parked, because liveInputBox cannot see the box's top separator (kanban b4802f1d). It is a
+          // pane CLASSIFICATION, not an emptiness check — do not read a green "idle" here as an empty box.
           state = pane ? detectPaneState(pane) : "unknown";
           // Primary: precise always-on fill % from the session transcript. Fallback: the footer
           // gauge (only visible when climbing) if the transcript can't be read.

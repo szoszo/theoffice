@@ -31,6 +31,7 @@ vi.mock("./tmux.js", () => ({
 }));
 vi.mock("./pane-state.js", () => ({
   isReadyForPrompt: () => true,
+  inputBoxProvablyEmpty: () => true,
   detectPaneState: () => "idle", // always ready, so deliverClaude proceeds to injection
   decideSubmitFollowup: () => "done", // submit confirmed on the first check
 }));
