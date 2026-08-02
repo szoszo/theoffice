@@ -5,7 +5,7 @@ import type { EngineConfig, AgentDef } from "../types.js";
 import { log } from "../logger.js";
 import { capturePane, clearInput, hasSession, newSession, sendKey, sendText, sessionNameFor } from "./tmux.js";
 import { withPaneLock } from "./pane-lock.js";
-import { detectPaneState, decideSubmitFollowup, isReadyForPrompt } from "./pane-state.js";
+import { detectPaneState, decideSubmitFollowup, inputBoxProvablyEmpty } from "./pane-state.js";
 import { writeAgentSettings } from "./profile.js";
 import { ensureFolderTrusted } from "./trust.js";
 import { markDelivering, markDelivered, markFailed, requeue } from "../queue/index.js";
@@ -73,7 +73,7 @@ export interface DeliveryResult {
 /** Lines to assume a pre-existing draft might span when we have no way to know. */
 const PRE_CLEAR_LINES = 40;
 /** How many clear-then-verify rounds before we declare the pane dirty. */
-const CLEAR_VERIFY_ROUNDS = 3;
+const CLEAR_VERIFY_ROUNDS = 5;
 /** Settle time after sending C-u before capturing, so we read the re-rendered pane not a transient one. */
 const CLEAR_SETTLE_MS = 250;
 
@@ -96,7 +96,11 @@ async function clearDraftVerified(socket: string, session: string, lines: number
     // "verified clean" on 2026-08-01 while residue survived and was submitted behind an owner
     // message. Treating cannot-tell as fine is the same mistake this whole fix exists to prevent;
     // I made it inside the fix for it.
-    if (isReadyForPrompt(pane)) return true;
+    // PROVABLY empty, not merely "not classified as typing". detectPaneState reports idle when the
+    // input box is too tall to be visible in the capture — which is exactly the large-residue case —
+    // so asking it here produced 24 false "clean"s in a row. Clearing shrinks the box, so this
+    // converges: each round brings the top separator closer to view.
+    if (inputBoxProvablyEmpty(pane)) return true;
   }
   return false;
 }

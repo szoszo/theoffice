@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  inputBoxProvablyEmpty,
   detectPaneState,
   isReadyForPrompt,
   detectsThinkingBlockError,
@@ -115,5 +116,36 @@ describe("shouldRetrySubmit / decideSubmitFollowup", () => {
     expect(decideSubmitFollowup(clean, payload, 0, 4)).toBe("done");
     expect(decideSubmitFollowup(stuck, payload, 0, 4)).toBe("retry-enter");
     expect(decideSubmitFollowup(stuck, payload, 4, 4)).toBe("give-up");
+  });
+});
+
+describe("inputBoxProvablyEmpty — a box we cannot SEE is never 'empty'", () => {
+  const SEP2 = "─".repeat(40);
+  const F = "  ⏵⏵ bypass permissions on (shift+tab to cycle)";
+
+  it("visible and empty -> true", () => {
+    expect(inputBoxProvablyEmpty(["reply", SEP2, "❯ ", SEP2, F].join("\n"))).toBe(true);
+  });
+
+  it("visible with parked text -> false", () => {
+    expect(inputBoxProvablyEmpty(["reply", SEP2, "❯ leftover residue", SEP2, F].join("\n"))).toBe(false);
+  });
+
+  it("REGRESSION: a box too tall to show its top separator is NOT empty", () => {
+    // The live failure: thousands of chars of residue push the top border off the captured pane, so
+    // liveInputBox returns null and detectPaneState calls it "idle". The bigger the mess, the cleaner
+    // it looked. 24 of 24 clears "verified" this way.
+    const huge = Array.from({ length: 40 }, (_, i) => `residue line ${i}`);
+    const pane = ["❯ residue starts here", ...huge, SEP2, F].join("\n"); // no TOP separator visible
+    expect(inputBoxProvablyEmpty(pane)).toBe(false);
+    expect(detectPaneState(pane)).toBe("idle"); // documents the inverted detector we work around
+  });
+
+  it("multi-line residue inside a visible box -> false", () => {
+    expect(inputBoxProvablyEmpty(["r", SEP2, "❯ line one", "line two", SEP2, F].join("\n"))).toBe(false);
+  });
+
+  it("no live box at all -> false (cannot prove empty)", () => {
+    expect(inputBoxProvablyEmpty("just some text with no footer")).toBe(false);
   });
 });

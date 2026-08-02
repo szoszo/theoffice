@@ -105,6 +105,26 @@ export function detectPaneState(pane: string): PaneState {
   return "idle";
 }
 
+/**
+ * PROVABLY empty: the live input box is visible AND holds no text.
+ *
+ * Distinct from `detectPaneState(...) === "idle"`, which reports idle when `liveInputBox` returns
+ * NULL — and it returns null exactly when the box's top separator has scrolled off the captured
+ * pane, i.e. when the draft is LARGE. That detector is inverted: the more residue there is, the more
+ * certainly it reports clean. On 2026-08-01/02 that produced 24 "draft cleared and verified" log
+ * lines out of 24 while the residue survived and was later submitted behind an owner message.
+ *
+ * Here a box we cannot SEE is never counted as empty. Clearing shrinks the box, so repeated rounds
+ * bring the top separator back into view and this converges rather than refusing forever.
+ */
+export function inputBoxProvablyEmpty(pane: string): boolean {
+  const box = liveInputBox(pane);
+  if (box == null) return false; // cannot see the box => cannot claim it is empty
+  return box
+    .split("\n")
+    .every((l) => l.replace(/^\s*❯/, "").trim() === "");
+}
+
 /** True only in the clean "ready to accept a fresh prompt" state. */
 export function isReadyForPrompt(pane: string): boolean {
   return detectPaneState(pane) === "idle";

@@ -29,6 +29,10 @@ const h = vi.hoisted(() => ({
   paneState: "idle" as string,
   /** What the pane reports AFTER a chunk fails — live, it is mid-render i.e. "busy". */
   paneStateAfterFail: null as string | null,
+  /** Whether the input box can be SEEN to be empty after clearing. */
+  boxEmpty: true,
+  /** What the box reports after a chunk fails — live, large residue is UNVERIFIABLE. */
+  boxEmptyAfterFail: null as boolean | null,
   clearLines: [] as number[],
 }));
 
@@ -42,6 +46,7 @@ vi.mock("./tmux.js", () => ({
     h.chunkCount++;
     if (isFail) {
       if (h.paneStateAfterFail != null) h.paneState = h.paneStateAfterFail;
+      if (h.boxEmptyAfterFail != null) h.boxEmpty = h.boxEmptyAfterFail;
       return false; // tmux returned non-zero / timed out
     }
     h.sent.push(text);
@@ -59,8 +64,10 @@ vi.mock("./tmux.js", () => ({
 vi.mock("./pane-state.js", () => ({
   // Controllable: "idle" means the clear worked; "typing" means a draft is still parked.
   detectPaneState: () => h.paneState,
-  // ONLY idle counts as clean — busy/unknown must NOT pass the clear-verify.
   isReadyForPrompt: () => h.paneState === "idle",
+  // The clear-verify now demands PROVABLE emptiness: a box that cannot be seen is never "empty".
+  // h.boxEmpty models that directly rather than via the pane's classification.
+  inputBoxProvablyEmpty: () => h.boxEmpty,
   decideSubmitFollowup: () => "done",
 }));
 
@@ -80,6 +87,8 @@ beforeEach(() => {
   h.failChunkAt = -1;
   h.paneState = "idle";
   h.paneStateAfterFail = null;
+  h.boxEmpty = true;
+  h.boxEmptyAfterFail = null;
   h.clearLines.length = 0;
 });
 
@@ -150,7 +159,7 @@ describe("aborting must leave the pane CLEAN, not merely unsubmitted (kanban b48
 
   it("reports 'dirty-pane' (not 'send-failed') when the draft CANNOT be cleared", async () => {
     h.failChunkAt = 2;
-    h.paneState = "typing"; // every verify still sees parked text
+    h.boxEmptyAfterFail = false; // every verify still sees parked text
     const res = await deliverPrompt("test", "agent-x", PROMPT);
     expect(res.ok).toBe(false);
     expect(res.reason).toBe("dirty-pane");
@@ -158,13 +167,14 @@ describe("aborting must leave the pane CLEAN, not merely unsubmitted (kanban b48
 
   it("still never presses Enter when the pane is left dirty", async () => {
     h.failChunkAt = 2;
-    h.paneState = "typing";
+    h.boxEmptyAfterFail = false;
     await deliverPrompt("test", "agent-x", PROMPT);
     expect(h.keys).not.toContain("Enter");
   });
 
   it("refuses to type BEHIND a pre-existing draft it cannot clear", async () => {
-    h.paneState = "typing"; // parked draft before we even start; clear never succeeds
+    h.paneState = "typing"; // parked draft before we even start
+    h.boxEmpty = false; // ...and the clear can never prove it gone
     const res = await deliverPrompt("test", "agent-x", PROMPT);
     expect(res.reason).toBe("dirty-pane");
     expect(h.sent.join("")).toBe(""); // nothing typed on top of the residue
@@ -173,34 +183,34 @@ describe("aborting must leave the pane CLEAN, not merely unsubmitted (kanban b48
 
   it("gives up after a bounded number of verify rounds instead of clearing forever", async () => {
     h.failChunkAt = 1;
-    h.paneState = "typing";
+    h.boxEmptyAfterFail = false;
     await deliverPrompt("test", "agent-x", PROMPT);
-    expect(h.clears).toBeLessThanOrEqual(3); // CLEAR_VERIFY_ROUNDS, not unbounded
+    expect(h.clears).toBeLessThanOrEqual(5); // CLEAR_VERIFY_ROUNDS, not unbounded
   });
 });
 
-describe("the clear-verify must accept ONLY an idle pane (regression: 12/12 false 'clean')", () => {
-  it("a BUSY pane is NOT proof the draft was cleared", async () => {
-    // The live regression: the pane is idle when we start, but after typing thousands of chars it is
-    // mid-render, i.e. "busy". The first version asked `!== "typing"`, so busy read as CLEAN and
-    // residue escaped 12 times out of 12 while reporting success.
+describe("the clear-verify demands PROVABLE emptiness (regression: 24/24 false 'clean')", () => {
+  it("a box that cannot be SEEN to be empty is NOT proof the draft was cleared", async () => {
+    // The live regression: large residue makes the input box taller than the captured pane, so its
+    // top separator scrolls off, liveInputBox returns null, and detectPaneState calls that "idle".
+    // The bigger the mess, the cleaner it looked — 24 of 24 clears "verified" this way.
     h.failChunkAt = 2;
-    h.paneStateAfterFail = "busy";
+    h.boxEmptyAfterFail = false;
     const res = await deliverPrompt("test", "agent-x", PROMPT);
     expect(res.reason).toBe("dirty-pane");
   });
 
-  it("an UNKNOWN pane is NOT proof the draft was cleared", async () => {
+  it("a provably EMPTY box lets the abort report a clean send-failed", async () => {
     h.failChunkAt = 2;
-    h.paneStateAfterFail = "unknown";
-    const res = await deliverPrompt("test", "agent-x", PROMPT);
-    expect(res.reason).toBe("dirty-pane");
-  });
-
-  it("only an IDLE pane lets the abort report a clean send-failed", async () => {
-    h.failChunkAt = 2;
-    h.paneState = "idle";
+    h.boxEmptyAfterFail = true;
     const res = await deliverPrompt("test", "agent-x", PROMPT);
     expect(res.reason).toBe("send-failed");
+  });
+
+  it("never presses Enter when emptiness could not be proven", async () => {
+    h.failChunkAt = 2;
+    h.boxEmptyAfterFail = false;
+    await deliverPrompt("test", "agent-x", PROMPT);
+    expect(h.keys).not.toContain("Enter");
   });
 });
