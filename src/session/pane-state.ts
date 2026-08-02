@@ -120,9 +120,85 @@ export function detectPaneState(pane: string): PaneState {
 export function inputBoxProvablyEmpty(pane: string): boolean {
   const box = liveInputBox(pane);
   if (box == null) return false; // cannot see the box => cannot claim it is empty
-  return box
+  return box.split("\n").every((l) => boxLineText(l) === "");
+}
+
+/** The visible text a box line holds, with the prompt glyph removed. */
+function boxLineText(line: string): string {
+  return line.replace(/^\s*❯/, "").trim();
+}
+
+/**
+ * ANSI escapes tmux emits with `capture-pane -e`: SGR/CSI sequences plus OSC strings (the v2.1.x
+ * welcome screen wraps its docs link in OSC-8 hyperlinks, terminated by BEL or ST).
+ */
+const CSI_RX = /\x1b\[[0-9;:?]*[ -/]*[@-~]/g;
+const OSC_RX = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+
+/**
+ * Drop styling from a `capture-pane -e` snapshot, yielding the exact text a plain `-p` capture gives.
+ * Line count and column text are preserved, so a styled snapshot can be classified by every regex in
+ * this file and indexed line-for-line against its styled original.
+ *
+ * Trailing blanks are trimmed per line because `-p` trims them and `-e` does not (a line ending in a
+ * reset sequence keeps the spaces that preceded it). No regex here is end-anchored, so this changes no
+ * verdict today — it just keeps `stripPaneStyling(-e) === -p` exactly true, which is the property that
+ * lets the delivery path classify a styled capture instead of taking a second, racing plain one.
+ */
+export function stripPaneStyling(pane: string): string {
+  return pane
+    .replace(OSC_RX, "")
+    .replace(CSI_RX, "")
     .split("\n")
-    .every((l) => l.replace(/^\s*❯/, "").trim() === "");
+    .map((l) => l.replace(/[ \t]+$/, ""))
+    .join("\n");
+}
+
+/** SGR 2 opens a faint run; 0 and 22 close it. Everything else leaves intensity alone. */
+function withoutFaintRuns(line: string): string {
+  let out = "";
+  let faint = false;
+  let cursor = 0;
+  for (const m of line.matchAll(/\x1b\[([0-9;]*)m/g)) {
+    if (!faint) out += line.slice(cursor, m.index);
+    const codes = (m[1] ?? "").split(";").filter((c) => c !== "");
+    for (const c of codes.length ? codes : ["0"]) {
+      if (c === "2") faint = true;
+      else if (c === "0" || c === "22") faint = false;
+    }
+    cursor = m.index + m[0].length;
+  }
+  if (!faint) out += line.slice(cursor);
+  return out;
+}
+
+/**
+ * PROVABLY empty, judged on a STYLED (`capture-pane -e`) snapshot — the only view that can tell
+ * Claude's ghost hint from residue.
+ *
+ * Since v2.1.x an empty composer is not blank: it renders `❯ ` plus a DIM (SGR 2) hint, and that hint
+ * is the agent's own last prompt (`❯ approve the pending travel bookings`). Stripped of styling it is
+ * indistinguishable from a parked draft, so on 2026-08-02 the pre-send guard called four agents' clean
+ * panes dirty and refused 144 deliveries — C-u cannot clear chrome, so every clear-verify round failed
+ * and the bus stayed wedged until the sessions were relaunched.
+ *
+ * Whitelisting hint strings cannot work: the hint IS a prompt, so the "safe" set is the residue set.
+ * Faintness is the evidence — a composer that actually holds text renders it at normal intensity.
+ *
+ * The 8e35fb2 invariant is unchanged: a box we cannot SEE is never empty. Only the reading of a
+ * VISIBLE box's content is styling-aware, and `[Pasted text #N]` stays disqualifying whatever its
+ * intensity, because that placeholder stands for buffered content, not chrome.
+ */
+export function inputBoxProvablyEmptyStyled(styledPane: string): boolean {
+  const styledLines = styledPane.split("\n");
+  const range = liveInputBoxRange(styledLines.map(stripPaneStyling));
+  if (range == null) return false; // cannot see the box => cannot claim it is empty
+  for (let i = range.top + 1; i < range.bottom; i++) {
+    const styled = styledLines[i]!;
+    if (PENDING_PASTE_RX.test(stripPaneStyling(styled))) return false;
+    if (boxLineText(stripPaneStyling(withoutFaintRuns(styled))) !== "") return false;
+  }
+  return true;
 }
 
 /** True only in the clean "ready to accept a fresh prompt" state. */
@@ -137,6 +213,16 @@ export function isReadyForPrompt(pane: string): boolean {
  */
 export function liveInputBox(pane: string): string | null {
   const lines = pane.split("\n");
+  const range = liveInputBoxRange(lines);
+  return range == null ? null : lines.slice(range.top + 1, range.bottom).join("\n");
+}
+
+/**
+ * Line indices of the two separators bounding the live input box, or null when there is no live box
+ * (no footer, or the box's top separator has scrolled off the capture). Shared so the plain and
+ * styled readers can never disagree about WHERE the box is, only about what its content means.
+ */
+function liveInputBoxRange(lines: string[]): { top: number; bottom: number } | null {
   const footerIdx = lines.findIndex((l) => IDLE_FOOTER_RX.test(l));
   if (footerIdx < 0) return null;
   let bottomSep = -1;
@@ -155,20 +241,35 @@ export function liveInputBox(pane: string): string | null {
     }
   }
   if (topSep < 0) return null;
-  return lines.slice(topSep + 1, bottomSep).join("\n");
+  return { top: topSep, bottom: bottomSep };
 }
 
 /**
  * True when a just-sent prompt appears stuck in the input box (placeholder or
  * verbatim parked text) and a retry-Enter is warranted.
+ *
+ * Accepts a plain OR a styled (`capture-pane -e`) snapshot. Styling matters here for the same reason
+ * as in the emptiness gate, only inverted: after a SUCCESSFUL submit the composer's dim ghost hint is
+ * the prompt we just sent, so a plain snapshot shows the payload sitting in the box and this reports
+ * "still stuck" about a message that landed. Enter on a ghost hint does nothing (verified against
+ * v2.1.220), so the retries were harmless in themselves — but the budget then ran out and the caller
+ * reported submit-give-up, which requeues an already-delivered message. Busy/footer detection still
+ * runs on the fully-stripped text so a dim spinner can never be de-fainted out of existence.
  */
 export function shouldRetrySubmit(pane: string, payloadHint: string, opts: { minHintChars?: number } = {}): boolean {
   if (!pane || !pane.trim()) return false;
-  for (const rx of BUSY_INDICATORS) if (rx.test(pane)) return false;
-  if (!IDLE_FOOTER_RX.test(pane)) return false;
-  const box = liveInputBox(pane);
-  if (box == null) return false;
-  if (PENDING_PASTE_RX.test(box)) return true;
+  const lines = pane.split("\n");
+  const plainLines = lines.map(stripPaneStyling);
+  const plain = plainLines.join("\n");
+  for (const rx of BUSY_INDICATORS) if (rx.test(plain)) return false;
+  if (!IDLE_FOOTER_RX.test(plain)) return false;
+  const range = liveInputBoxRange(plainLines);
+  if (range == null) return false;
+  const box = lines
+    .slice(range.top + 1, range.bottom)
+    .map((l) => stripPaneStyling(withoutFaintRuns(l)))
+    .join("\n");
+  if (PENDING_PASTE_RX.test(plainLines.slice(range.top + 1, range.bottom).join("\n"))) return true;
   const rawMin = opts.minHintChars;
   const safeMin = typeof rawMin === "number" && Number.isFinite(rawMin) ? rawMin : 16;
   const minHint = Math.max(safeMin, 1);

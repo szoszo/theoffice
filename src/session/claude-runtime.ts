@@ -5,7 +5,7 @@ import type { EngineConfig, AgentDef } from "../types.js";
 import { log } from "../logger.js";
 import { capturePane, clearInput, hasSession, newSession, sendKey, sendText, sessionNameFor } from "./tmux.js";
 import { withPaneLock } from "./pane-lock.js";
-import { detectPaneState, decideSubmitFollowup, inputBoxProvablyEmpty } from "./pane-state.js";
+import { detectPaneState, decideSubmitFollowup, inputBoxProvablyEmptyStyled, stripPaneStyling } from "./pane-state.js";
 import { writeAgentSettings } from "./profile.js";
 import { ensureFolderTrusted } from "./trust.js";
 import { markDelivering, markDelivered, markFailed, requeue } from "../queue/index.js";
@@ -92,13 +92,15 @@ async function clearDraftVerified(socket: string, session: string, lines: number
     // Let the TUI actually process the keys and re-render. Without this we capture mid-render and
     // read a transient state rather than the settled one.
     await sleep(CLEAR_SETTLE_MS);
-    const pane = capturePane(socket, session);
+    // STYLED capture: the verify has to tell residue from Claude's dim ghost hint. C-u cannot erase
+    // chrome, so on a plain capture a clean pane never verifies and all five rounds burn.
+    const pane = capturePane(socket, session, { escapes: true });
     if (pane == null) return false; // cannot see the pane => cannot claim it is clean
     // PROVABLY empty, not merely "not classified as typing". detectPaneState reports idle when the
     // input box is too tall to be visible in the capture — which is exactly the large-residue case —
     // so asking it here produced 24 false "clean"s in a row. Clearing shrinks the box, so this
     // converges: each round brings the top separator closer to view.
-    if (inputBoxProvablyEmpty(pane)) return true;
+    if (inputBoxProvablyEmptyStyled(pane)) return true;
   }
   return false;
 }
@@ -112,8 +114,13 @@ async function clearDraftVerified(socket: string, session: string, lines: number
 export async function deliverPrompt(socket: string, session: string, prompt: string): Promise<DeliveryResult> {
   if (!hasSession(socket, session)) return { ok: false, reason: "no-session" };
 
-  const pre = capturePane(socket, session);
-  if (pre == null) return { ok: false, reason: "not-ready" };
+  // ONE styled capture, two readings. `-e` keeps the ANSI attributes the emptiness gate needs; the
+  // classifiers get the identical plain text back via stripPaneStyling. Taking a second, separate
+  // capture for the gate would race the first — the pane could go busy in between and we would send
+  // C-u into a working agent, the one thing the ordering below exists to prevent.
+  const preStyled = capturePane(socket, session, { escapes: true });
+  if (preStyled == null) return { ok: false, reason: "not-ready" };
+  const pre = stripPaneStyling(preStyled);
   const state = detectPaneState(pre);
   if (state === "error") return { ok: false, reason: "wedged" };
   // Busy/unknown FIRST, so the clear below only ever runs against an idle-or-typing pane. Sending C-u
@@ -125,7 +132,11 @@ export async function deliverPrompt(socket: string, session: string, prompt: str
   // liveInputBox returns null and detectPaneState answers "idle": the exact scenario behind all three
   // b4802f1d incidents would SKIP the clear entirely and type behind the residue. Same inversion as the
   // abort path, which was fixed first only because it happened to know its own line count.
-  if (!inputBoxProvablyEmpty(pre) && !(await clearDraftVerified(socket, session, PRE_CLEAR_LINES))) {
+  //
+  // Ask it of the STYLED snapshot. Since v2.1.x an empty composer renders a dim hint that is the agent's
+  // own last prompt, so the plain view of a CLEAN pane is character-for-character a parked draft: on
+  // 2026-08-02 that refused 144 deliveries across four agents and wedged the bus (kanban cf693128).
+  if (!inputBoxProvablyEmptyStyled(preStyled) && !(await clearDraftVerified(socket, session, PRE_CLEAR_LINES))) {
     logger.error({ session }, "input box is not provably empty and could not be cleared — refusing to type behind it");
     return { ok: false, reason: "dirty-pane" };
   }
@@ -156,11 +167,14 @@ export async function deliverPrompt(socket: string, session: string, prompt: str
   await sleep(SETTLE_BEFORE_ENTER_MS);
   sendKey(socket, session, "Enter");
 
-  // confirm the submit actually landed; retry Enter within a bounded budget
+  // Confirm the submit actually landed; retry Enter within a bounded budget. STYLED again, because the
+  // ghost hint a successful submit leaves behind IS the prompt we just sent: on a plain capture the box
+  // "contains the payload", the loop calls a landed message stuck, burns its budget and reports
+  // submit-give-up, and the deliverer requeues a message the agent already has.
   const hint = prompt.slice(0, Math.min(prompt.length, 40));
   for (let attempt = 0; attempt <= SUBMIT_RETRY_MAX; attempt++) {
     await sleep(SUBMIT_RETRY_POLL_MS);
-    const pane = capturePane(socket, session);
+    const pane = capturePane(socket, session, { escapes: true });
     const action = decideSubmitFollowup(pane, hint, attempt, SUBMIT_RETRY_MAX);
     if (action === "done") return { ok: true };
     if (action === "give-up") return { ok: false, reason: "submit-give-up" };

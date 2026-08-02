@@ -124,11 +124,16 @@ export interface CaptureOpts {
   join?: boolean;
   /** tmux -S: start line, negative = scrollback (e.g. -200 for the last 200 lines incl. history). */
   start?: number;
+  /** tmux -e: keep the ANSI escape sequences. Required to tell Claude's DIM ghost hint in an empty
+   *  composer from real parked text — plain capture renders both as the same characters, which wedged
+   *  four agents' inboxes on 2026-08-02. Pair with stripPaneStyling() to get the plain view back. */
+  escapes?: boolean;
 }
 
 export function capturePane(socket: string, name: string, opts: CaptureOpts = {}): string | null {
   const args = ["capture-pane", "-t", name, "-p"];
   if (opts.join) args.push("-J");
+  if (opts.escapes) args.push("-e");
   if (opts.start !== undefined) args.push("-S", String(opts.start));
   const r = tmux(socket, args);
   return r.code === 0 ? r.stdout : null;

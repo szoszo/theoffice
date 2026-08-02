@@ -66,8 +66,12 @@ vi.mock("./pane-state.js", () => ({
   detectPaneState: () => h.paneState,
   isReadyForPrompt: () => h.paneState === "idle",
   // The clear-verify now demands PROVABLE emptiness: a box that cannot be seen is never "empty".
-  // h.boxEmpty models that directly rather than via the pane's classification.
-  inputBoxProvablyEmpty: () => h.boxEmpty,
+  // h.boxEmpty models that directly rather than via the pane's classification. The runtime reads a
+  // STYLED capture so it can tell residue from Claude's dim ghost hint (see
+  // ghost-placeholder-delivery.test.ts, which exercises the real reader against live pane bytes);
+  // these chunk-integrity cases care only about the empty/not-empty verdict, so the flag drives it.
+  inputBoxProvablyEmptyStyled: () => h.boxEmpty,
+  stripPaneStyling: (s: string) => s, // pane fixtures here carry no escapes
   decideSubmitFollowup: () => "done",
 }));
 
