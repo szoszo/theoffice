@@ -133,7 +133,9 @@ function boxLineText(line: string): string {
  * welcome screen wraps its docs link in OSC-8 hyperlinks, terminated by BEL or ST).
  */
 const CSI_RX = /\x1b\[[0-9;:?]*[ -/]*[@-~]/g;
-const OSC_RX = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+/** The body excludes \n so a truncated hyperlink can never swallow a line break and drop rows — the
+ *  styled reader indexes styled and plain lines against each other, so line count must be stable. */
+const OSC_RX = /\x1b\][^\x07\x1b\n]*(?:\x07|\x1b\\)/g;
 
 /**
  * Drop styling from a `capture-pane -e` snapshot, yielding the exact text a plain `-p` capture gives.
@@ -154,10 +156,19 @@ export function stripPaneStyling(pane: string): string {
     .join("\n");
 }
 
-/** SGR 2 opens a faint run; 0 and 22 close it. Everything else leaves intensity alone. */
-function withoutFaintRuns(line: string): string {
+/**
+ * SGR 2 opens a faint run; 0 and 22 close it. Everything else leaves intensity alone.
+ *
+ * `faintIn` carries the intensity in force at the start of the line and the result reports the
+ * intensity left in force at its end, because `capture-pane -e` emits an escape only where the
+ * attribute CHANGES: a soft-wrapped continuation row inherits its predecessor's attributes and
+ * carries no SGR-2 of its own. Reset per line and row 2 of a wrapped ghost hint reads as real text,
+ * which bricks the pane permanently — C-u cannot clear chrome. Verified against tmux directly:
+ * printing a dim string wider than the pane yields a continuation row with no SGR-2 prefix.
+ */
+function withoutFaintRuns(line: string, faintIn = false): { text: string; faintOut: boolean } {
   let out = "";
-  let faint = false;
+  let faint = faintIn;
   let cursor = 0;
   for (const m of line.matchAll(/\x1b\[([0-9;]*)m/g)) {
     if (!faint) out += line.slice(cursor, m.index);
@@ -169,7 +180,7 @@ function withoutFaintRuns(line: string): string {
     cursor = m.index + m[0].length;
   }
   if (!faint) out += line.slice(cursor);
-  return out;
+  return { text: out, faintOut: faint };
 }
 
 /**
@@ -193,10 +204,15 @@ export function inputBoxProvablyEmptyStyled(styledPane: string): boolean {
   const styledLines = styledPane.split("\n");
   const range = liveInputBoxRange(styledLines.map(stripPaneStyling));
   if (range == null) return false; // cannot see the box => cannot claim it is empty
+  // Faint state threads DOWN the box: a hint that soft-wraps leaves its continuation rows unmarked.
+  // It starts false at the top separator, so nothing outside the box can make box content look dim.
+  let faint = false;
   for (let i = range.top + 1; i < range.bottom; i++) {
     const styled = styledLines[i]!;
     if (PENDING_PASTE_RX.test(stripPaneStyling(styled))) return false;
-    if (boxLineText(stripPaneStyling(withoutFaintRuns(styled))) !== "") return false;
+    const { text, faintOut } = withoutFaintRuns(styled, faint);
+    faint = faintOut;
+    if (boxLineText(stripPaneStyling(text)) !== "") return false;
   }
   return true;
 }
@@ -265,9 +281,14 @@ export function shouldRetrySubmit(pane: string, payloadHint: string, opts: { min
   if (!IDLE_FOOTER_RX.test(plain)) return false;
   const range = liveInputBoxRange(plainLines);
   if (range == null) return false;
+  let faint = false;
   const box = lines
     .slice(range.top + 1, range.bottom)
-    .map((l) => stripPaneStyling(withoutFaintRuns(l)))
+    .map((l) => {
+      const r = withoutFaintRuns(l, faint);
+      faint = r.faintOut;
+      return stripPaneStyling(r.text);
+    })
     .join("\n");
   if (PENDING_PASTE_RX.test(plainLines.slice(range.top + 1, range.bottom).join("\n"))) return true;
   const rawMin = opts.minHintChars;

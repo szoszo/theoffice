@@ -224,6 +224,25 @@ describe("inputBoxProvablyEmptyStyled — a DIM ghost hint is chrome, real text 
     expect(inputBoxProvablyEmptyStyled("\x1b[2mjust some dim text with no box\x1b[0m")).toBe(false);
   });
 
+  it("a WRAPPED ghost hint stays chrome on its continuation row", () => {
+    // Toby's Q1, and the mechanism is confirmed: `capture-pane -e` emits an escape only where the
+    // attribute CHANGES, so a soft-wrapped row inherits faintness from the row above and carries no
+    // SGR-2 of its own. Reset faint per line and row 2 of a wrapped hint reads as normal-intensity
+    // text — permanently non-empty, and C-u cannot clear chrome, so the pane bricks exactly the way
+    // it did before dd5a073. Faint state therefore has to be threaded down the box.
+    const wrapped = boxed(
+      "\x1b[39m❯\xa0\x1b[2mapprove the pending travel bookings for the team offsite and then",
+      "confirm the seat selection with Dajana\x1b[0m"
+    );
+    expect(inputBoxProvablyEmptyStyled(wrapped)).toBe(true);
+  });
+
+  it("the faint run must not leak past the box into a later line's meaning", () => {
+    // Threading is scoped to the box and only forward: a hint closed on row 1 leaves row 2 real.
+    const closed = boxed("\x1b[39m❯\xa0\x1b[2mghost row one\x1b[0m", "\x1b[39mreal residue row two");
+    expect(inputBoxProvablyEmptyStyled(closed)).toBe(false);
+  });
+
   it("a pending paste placeholder is dim chrome to the eye but MUST NOT read empty", () => {
     // `[Pasted text #1]` really is buffered content waiting on Enter; only the composer's own hint is
     // chrome. Guard it explicitly so a future dim-rendered paste marker can never slip through.
@@ -245,6 +264,18 @@ describe("stripPaneStyling — the plain view must survive the -e capture", () =
     ["earlier reply", "─".repeat(80), inner, "─".repeat(80), "  ⏵⏵ bypass permissions on (shift+tab to cycle)"].join(
       "\n"
     );
+
+  it("an unterminated OSC string cannot swallow the line break", () => {
+    // Toby's finding: the OSC body class allowed \n, so a truncated hyperlink (right-side truncation
+    // at the pane edge is routine) would eat everything up to the next terminator INCLUDING newlines,
+    // dropping lines and breaking the line-for-line alignment the styled reader indexes on.
+    // Needs a later terminator to bite (the body class already stops at ESC), so this is a narrow
+    // case — but "narrow" is how the ghost bug got here too, and excluding \n costs nothing.
+    const truncated = "\x1b]8;id=x;https://example.com/very-long\nsecond line\nthird\x07 line";
+    const out = stripPaneStyling(truncated);
+    expect(out.split("\n")).toHaveLength(3);
+    expect(out).toContain("second line");
+  });
 
   it("reproduces a plain -p capture exactly, trailing blanks included", () => {
     // `-e` keeps the spaces before a line's reset sequence; `-p` trims them. Verified against a live
