@@ -46,8 +46,16 @@ export function writeAgentSettings(cfg: EngineConfig, agent: AgentDef): void {
   const deny = [...(prof.deny ?? [])];
   // runtime filesystem denies (sensitive paths) — defense in depth vs disk snooping
   deny.push(`Read(${cfg.paths.secretsDir}/**)`);
-  deny.push(`Read(${cfg.paths.dbFile})`, `Read(${cfg.paths.dbFile}-wal)`, `Read(${cfg.paths.dbFile}-shm)`);
+  // The DB and every backup of it. The backups used to be missed by this rule while holding the same
+  // content, which made the deny on the live file decorative.
+  deny.push(`Read(${cfg.paths.dbFile}*)`);
   deny.push(`Read(${cfg.paths.vaultKeyFile})`);
+  // Provider logins of agents that run on their OWN subscription. An agent home holds the account
+  // credentials, so reading a sibling's home would hand this agent that whole subscription — the
+  // mailbox, the Drive and the usage. Nobody needs to read an agent home through the Read tool
+  // (the CLI loads its own credentials at the OS level), so it is denied to every restricted agent,
+  // including its own: the rule stays simple and there is nothing legitimate to lose.
+  deny.push(`Read(${cfg.paths.agentsDir}/*/home/**)`);
 
   const settings = { permissions: { deny } };
   mkdirSync(join(agent.dir, ".claude"), { recursive: true });

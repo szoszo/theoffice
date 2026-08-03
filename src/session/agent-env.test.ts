@@ -37,3 +37,42 @@ describe("buildAgentEnv — engine reserved keys win over the agent .env", () =>
     expect(env.PATH.includes("/opt/custom/bin")).toBe(true);
   });
 });
+
+/**
+ * HOME decides which SUBSCRIPTION an agent works under: the provider CLIs resolve their login and
+ * their connectors from it. The default must stay the owner's HOME — flipping a signed-in agent to a
+ * fresh one logs it out — and `ownAccount` must be the only thing that changes it.
+ */
+describe("buildAgentEnv — HOME selects the subscription", () => {
+  let dir = "";
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "agenthome-"));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const cfg: any = { owner: { timezone: "Europe/Budapest" }, paths: { tenantRoot: "/tenant" }, web: { port: 3430 } };
+
+  it("defaults to the owner's HOME (shared account) when ownAccount is unset", () => {
+    const env = buildAgentEnv(cfg, { id: "mancika", dir });
+    expect(env.HOME).toBe(process.env.HOME);
+  });
+
+  it("gives an ownAccount agent its own HOME inside its working dir", () => {
+    const env = buildAgentEnv(cfg, { id: "charly", dir, ownAccount: true });
+    expect(env.HOME).toBe(join(dir, "home"));
+    expect(env.HOME).not.toBe(process.env.HOME);
+  });
+
+  it("keeps PATH on the OWNER's ~/.local/bin even with a separate HOME", () => {
+    // office-say and the provider binaries live in the owner's bin; a separate identity must not mean
+    // a separate (missing) toolchain, or the agent silently loses its ability to answer on Slack.
+    const env = buildAgentEnv(cfg, { id: "charly", dir, ownAccount: true });
+    expect(env.PATH.startsWith(`${process.env.HOME}/.local/bin:`)).toBe(true);
+  });
+
+  it("a hostile .env cannot claim another account by setting HOME", () => {
+    writeFileSync(join(dir, ".env"), "HOME=/home/arnohegedus\n");
+    const env = buildAgentEnv(cfg, { id: "charly", dir, ownAccount: true });
+    expect(env.HOME).toBe(join(dir, "home")); // engine wins, the .env does not
+  });
+});

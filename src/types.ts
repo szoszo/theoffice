@@ -41,6 +41,20 @@ export interface AgentDef {
   /** security profile name (drives the connector deny-list); default = full access */
   profile?: string;
   /**
+   * Run this agent under its OWN provider account instead of the owner's.
+   *
+   * Unset (default): the agent shares the owner's HOME, therefore the owner's Claude/ChatGPT login,
+   * connectors and rate limit. Set to true: the agent gets its own HOME (`<agent.dir>/home`, 0700) and
+   * must be signed in separately — after which its connectors see THAT account's mailbox and Drive,
+   * and its usage counts against THAT subscription.
+   *
+   * This is the switch that makes several subscriptions usable side by side, and it is also the
+   * isolation boundary between them: no agent may read another agent's home (enforced in
+   * session/profile.ts). Flipping it on an agent that is already signed in logs that agent out until
+   * someone signs in again under the new HOME — so migrate one agent at a time, deliberately.
+   */
+  ownAccount?: boolean;
+  /**
    * Which terminal-agent runtime drives this agent — the provider id of a registered runtime
    * (see src/session/runtime.ts). "claude" (Claude Code, the default) and "codex" (OpenAI Codex CLI)
    * ship today; the registry is provider-pluggable so a future "local"/"gemini" runtime is one module.
