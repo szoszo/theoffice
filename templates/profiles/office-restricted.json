@@ -1,0 +1,12 @@
+{
+  "description": "Az iroda specialista agentjeihez (Mancika, Preator). MEGTARTJA azt, amire a munkájukhoz szükségük van: Gmail (olvasás, címkézés, piszkozat), Google Drive, Google Naptár, és a jogi adatbázisok (Lexa, Legal Data Hunter). MEGTAGAD minden olyan kapcsolatot, amivel a világ felé kifelé tudnának lépni vagy a tulajdonos infrastruktúráját átírni: n8n (workflow futtatás/publikálás), Canva (publikálás), Slack fiók-connector (posztolás bárhova a workspace-ben), LegalZoom, WorkOS, Fireflies, Economic Index. A motor ezen felül automatikusan hozzáadja a fájlszintű tiltásokat: más agentek titkai, a nyers adatbázis, a vault kulcs. FIGYELEM: ez a lista NEM automatikus. Ha új connector kerül a fiókra, az alapból ENGEDÉLYEZETT lesz, amíg ide fel nem vesszük. Hozzárendelés: agent.json \"profile\":\"office-restricted\".",
+  "deny": [
+    "mcp__claude_ai_n8n__*",
+    "mcp__claude_ai_Canva__*",
+    "mcp__claude_ai_Slack__*",
+    "mcp__claude_ai_LegalZoom__*",
+    "mcp__claude_ai_WorkOS__*",
+    "mcp__claude_ai_Fireflies__*",
+    "mcp__claude_ai_Anthropic_Economic_Index__*"
+  ]
+}
