@@ -241,16 +241,32 @@ export async function searchMemoriesHybrid(
   }
   if (!qv?.length) return keyword();
 
+  // Give each side a GUARANTEED share instead of concatenating. Straight concatenation let the vector
+  // side fill every slot, so a query for an exact invoice number returned 8 semantically-adjacent rows
+  // and not the row containing the string. Same starvation the topical reserve fixes in recall.
+  const vectorShare = Math.max(1, Math.ceil(limit / 2));
+  const vecHits = searchMemoriesByVector({
+    agentId: a.agentId,
+    category: a.category,
+    queryVector: qv,
+    limit,
+    floor: 0.42, // match recall: below this a "semantic match" is noise
+  });
+  const kwHits = keyword();
+
   const out: MemoryRow[] = [];
   const seen = new Set<number>();
-  for (const r of [
-    ...searchMemoriesByVector({ agentId: a.agentId, category: a.category, queryVector: qv, limit }),
-    ...keyword(),
-  ]) {
-    if (out.length >= limit) break;
-    if (seen.has(r.id)) continue;
-    seen.add(r.id);
-    out.push(r);
-  }
+  const take = (rows: MemoryRow[], max: number) => {
+    for (const r of rows) {
+      if (out.length >= limit || max <= 0) return;
+      if (seen.has(r.id)) continue;
+      seen.add(r.id);
+      out.push(r);
+      max--;
+    }
+  };
+  take(vecHits, vectorShare);          // meaning leads
+  take(kwHits, limit - out.length);    // keywords get the rest, guaranteed
+  take(vecHits, limit - out.length);   // any slots keywords did not use go back to meaning
   return out;
 }

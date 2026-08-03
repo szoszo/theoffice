@@ -46,6 +46,20 @@ describe("searchMemoriesHybrid", () => {
     expect(rows.map((r) => r.id)).toEqual(searchMemories({ agentId: "h", q: "invoice", limit: 5 }).map((r) => r.id));
   });
 
+  it("REGRESSION: vector hits must not crowd out an exact-string keyword hit", async () => {
+    // Shipped and immediately caught in production: with vector hits concatenated BEFORE keyword hits,
+    // a query for invoice INV-2026-0042 returned 8 rows, none of them the row containing that string,
+    // because the vector side filled every slot first. Same starvation shape as the topical reserve in
+    // recall, repeated one commit later. Keyword results get a guaranteed share.
+    for (let i = 0; i < 20; i++) {
+      const id = saveMemory({ agentId: "h", content: `padding memory ${i} about tenancy matters`, category: "cold" });
+      getDb().prepare("UPDATE memories SET embedding = ? WHERE id = ?").run(encodeEmbedding(V(2)), id);
+    }
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ embedding: V(2) }) })));
+    const rows = await searchMemoriesHybrid({ agentId: "h", q: "INV-2026-0042", limit: 8 });
+    expect(rows.some((r) => r.content.includes("INV-2026-0042"))).toBe(true);
+  });
+
   it("respects the limit and never duplicates a row across both paths", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ embedding: V(2) }) })));
     const rows = await searchMemoriesHybrid({ agentId: "h", q: "eviction", limit: 2 });
