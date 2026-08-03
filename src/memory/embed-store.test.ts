@@ -27,10 +27,10 @@ const embeddingOf = (id: number) =>
 
 describe("attachEmbedding", () => {
   it("writes the vector onto the row", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ embedding: [0.5, 0.25] }) })));
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ embedding: Array(768).fill(0.5) }) })));
     const id = saveMemory({ agentId: "a", content: "the flat on Baker Street" });
     expect(await attachEmbedding(id, "the flat on Baker Street")).toBe(true);
-    expect(JSON.parse(embeddingOf(id)!)).toEqual([0.5, 0.25]);
+    expect(JSON.parse(embeddingOf(id)!)).toHaveLength(768);
   });
 
   it("Ollama down -> returns false and LEAVES THE MEMORY INTACT, unvectorized", async () => {
@@ -43,10 +43,6 @@ describe("attachEmbedding", () => {
     expect(row.content).toBe("saved while ollama was down");
   });
 
-  it("a row that no longer exists does not throw", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ embedding: [1] }) })));
-    await expect(attachEmbedding(999_999, "gone")).resolves.toBe(true);
-  });
 });
 
 describe("saveMemory never blocks on the embedder", () => {
@@ -65,5 +61,24 @@ describe("countEmbeddings — the observability that was missing", () => {
     expect(c.total).toBeGreaterThan(0);
     expect(c.embedded).toBeGreaterThanOrEqual(1);
     expect(c.missing).toBe(c.total - c.embedded);
+  });
+
+  it("counts wrong-dimension vectors separately, so a dead one cannot hide inside 'covered'", () => {
+    // Legacy rows, or anything written before the dimension check existed, could hold a vector of the
+    // wrong length. It reads cosine 0 against everything, so it is dead weight that LOOKS like coverage.
+    const id = saveMemory({ agentId: "dim", content: "row with a legacy short vector" });
+    getDb().prepare("UPDATE memories SET embedding = ? WHERE id = ?").run(JSON.stringify([1, 2, 3]), id);
+    const c = countEmbeddings();
+    expect(c.wrongDim).toBeGreaterThanOrEqual(1);
+    expect(c.usable).toBe(c.embedded - c.wrongDim);
+  });
+});
+
+describe("attachEmbedding reports what actually happened", () => {
+  it("a row that does not exist returns false, not a false success", async () => {
+    // Cosmetic but it is a truth claim: returning true for a zero-row UPDATE would let a caller
+    // believe a vector landed when nothing was written.
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ embedding: Array(768).fill(0.2) }) })));
+    expect(await attachEmbedding(999_999, "nonexistent row")).toBe(false);
   });
 });

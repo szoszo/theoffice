@@ -1,6 +1,6 @@
 import { getDb } from "../db/index.js";
 import type { MemoryTier } from "../types.js";
-import { generateEmbedding, encodeEmbedding } from "./embeddings.js";
+import { generateEmbedding, encodeEmbedding, EXPECTED_DIM } from "./embeddings.js";
 
 export interface SaveMemoryArgs {
   agentId: string;
@@ -41,8 +41,8 @@ export async function attachEmbedding(id: number, text: string): Promise<boolean
   try {
     const v = await generateEmbedding(text);
     if (!v) return false;
-    getDb().prepare("UPDATE memories SET embedding = ? WHERE id = ?").run(encodeEmbedding(v), id);
-    return true;
+    const r = getDb().prepare("UPDATE memories SET embedding = ? WHERE id = ?").run(encodeEmbedding(v), id);
+    return r.changes > 0; // a zero-row UPDATE is not a success — the row was deleted meanwhile
   } catch {
     return false;
   }
@@ -53,13 +53,27 @@ export async function attachEmbedding(id: number, text: string): Promise<boolean
  * column was there, saves succeeded, FTS recall worked, and nothing anywhere reported that not one
  * vector had been written since the 2026-06-09 migration.
  */
-export function countEmbeddings(): { total: number; embedded: number; missing: number } {
+export function countEmbeddings(): {
+  total: number;
+  embedded: number;
+  missing: number;
+  /** stored but the wrong length: present, counted as covered, yet semantically dead */
+  wrongDim: number;
+  /** embedded MINUS wrongDim — the number that actually means anything */
+  usable: number;
+} {
   const r = getDb()
-    .prepare("SELECT COUNT(*) total, SUM(embedding IS NOT NULL) embedded FROM memories")
-    .get() as { total: number; embedded: number | null };
+    .prepare(
+      `SELECT COUNT(*) total,
+              SUM(embedding IS NOT NULL) embedded,
+              SUM(embedding IS NOT NULL AND json_array_length(embedding) != ?) wrongDim
+         FROM memories`
+    )
+    .get(EXPECTED_DIM) as { total: number; embedded: number | null; wrongDim: number | null };
   const total = Number(r.total ?? 0);
   const embedded = Number(r.embedded ?? 0);
-  return { total, embedded, missing: total - embedded };
+  const wrongDim = Number(r.wrongDim ?? 0);
+  return { total, embedded, missing: total - embedded, wrongDim, usable: embedded - wrongDim };
 }
 
 /**
@@ -68,8 +82,14 @@ export function countEmbeddings(): { total: number; embedded: number; missing: n
  */
 export async function backfillEmbeddings(limit = 200): Promise<{ attempted: number; written: number }> {
   const rows = getDb()
-    .prepare("SELECT id, content, keywords FROM memories WHERE embedding IS NULL ORDER BY id LIMIT ?")
-    .all(limit) as { id: number; content: string; keywords: string | null }[];
+    // Re-attempt wrong-length vectors too, not just NULLs: a transient bad model response would
+    // otherwise be permanent, because the row looks "covered" forever.
+    .prepare(
+      `SELECT id, content, keywords FROM memories
+        WHERE embedding IS NULL OR json_array_length(embedding) != ?
+        ORDER BY id LIMIT ?`
+    )
+    .all(EXPECTED_DIM, limit) as { id: number; content: string; keywords: string | null }[];
   let written = 0;
   for (const row of rows) {
     if (await attachEmbedding(row.id, embeddableText(row.content, row.keywords))) written++;

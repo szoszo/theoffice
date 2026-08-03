@@ -16,6 +16,14 @@ const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://127.0.0.1:11434";
 const EMBED_MODEL = process.env.EMBED_MODEL ?? "nomic-embed-text";
 /** Matches the old ClaudeClaw generator, so backfilled and live vectors stay comparable. */
 const MAX_INPUT_CHARS = 2000;
+/**
+ * nomic-embed-text returns 768 dimensions. A vector of any other length is REJECTED rather than
+ * stored, because a stored wrong-length vector is the worst of both worlds: cosine reads 0 against
+ * every real vector (semantically dead), yet the row counts as "covered" and the backfill, which
+ * selects WHERE embedding IS NULL, never retries it. Leaving the row NULL is honest and self-healing.
+ * Found by Toby's adversarial pass on fc077ea, 2026-08-03, before it could bite.
+ */
+export const EXPECTED_DIM = Number(process.env.EMBED_DIM ?? 768);
 /** Ollama is local; a hung request must not stall a memory save or a recall. */
 const TIMEOUT_MS = 20_000;
 
@@ -51,8 +59,8 @@ export function decodeEmbedding(s: string | null | undefined): number[] | null {
     const v: unknown = JSON.parse(s);
     if (!Array.isArray(v) || v.length === 0) return null;
     if (!v.every((n) => typeof n === "number" && Number.isFinite(n))) return null;
-    return v as number[];
-  } catch {
+    return v as number[]; // no dimension opinion here: this is a parser. The write side is the gate,
+  } catch {                //  and cosineSimilarity already returns 0 on a length mismatch.
     return null;
   }
 }
@@ -73,6 +81,7 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
     const v = data?.embedding;
     if (!Array.isArray(v) || v.length === 0) return null;
     if (!v.every((n) => typeof n === "number" && Number.isFinite(n))) return null;
+    if (v.length !== EXPECTED_DIM) return null; // half-loaded / swapped model — keep the row NULL
     return v as number[];
   } catch {
     return null; // Ollama down / timeout / bad JSON — the caller keeps its keyword path
