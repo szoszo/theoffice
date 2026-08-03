@@ -9,6 +9,17 @@ const VECTOR_FLOOR = 0.42;
  * Slots inside the topical set reserved for KEYWORD hits. Vectors are better at meaning and worse at
  * exact strings (ids, invoice numbers, proper nouns), which is the whole reason both paths exist. With
  * vectors filling the set first, a saturated vector result zeroed the keyword contribution entirely.
+ *
+ * SCOPE OF THE GUARANTEE, stated precisely because the earlier wording overclaimed: this reserves
+ * SLOTS in the result set, not BYTES in the preamble. Keyword-reserved entries sit last, so the byte
+ * budget can still drop them behind longer vector entries. That is deliberate, not an oversight:
+ * forcing them ahead would spend a scarce topical slot on FTS output that is measurably noisy (Darryl
+ * observed the reserved keyword hits on real data were briefing feedback, not the queried topic), and
+ * trading a good semantic match for noise is a bad default.
+ *
+ * The place an exact string is GUARANTEED to be findable is the on-demand search
+ * (searchMemoriesHybrid, GET /api/memories?q=), which reserves keyword slots and has no byte budget.
+ * Session-start recall gives keywords a fair chance; deliberate lookup is where they are guaranteed.
  */
 const TOPICAL_KEYWORD_SLOTS = 2;
 /** The embedder sits on the session-start prime path, so it gets a short leash, not the 20s default. */
