@@ -158,3 +158,27 @@ describe("every tier gets a guaranteed slice, none starves another", () => {
     expect(out).toContain("WARM FACT");
   });
 });
+
+describe("keyword hits get reserved slots INSIDE topical (Darryl, the 4th starvation)", () => {
+  it("saturated vector hits cannot zero out keyword-only matches", () => {
+    // The one place I did not apply my own reserve. The byte budget got reserves; the topical
+    // RESULT-SET assembly did not. Vectors push first up to MAX_TOPICAL, so once they saturate, the
+    // keyword search contributes nothing — and keyword-only matches are exactly the exact-string ids
+    // and invoice numbers the comment says keywords exist for. Verified by Darryl on real data:
+    // 6 vector hits saturated the set and all 6 keyword-only hits were dropped.
+    for (let i = 0; i < 8; i++) seed(`semantically adjacent filler ${i}`, "cold", V(5), "v3");
+    seed("INV-2026-0099 exact invoice reference", "cold", V(6), "v3"); // vector-far, keyword-near
+    const out = recallForPrompt("v3", "INV-2026-0099", V(5));
+    expect(out).toContain("INV-2026-0099");
+  });
+});
+
+describe("the documented cap covers the WHOLE preamble, frame included", () => {
+  it("total output never exceeds PREAMBLE_MAX_CHARS", () => {
+    // The constant is documented as "Hard cap on the WHOLE preamble", but the header, footer and the
+    // "N more" line were uncounted, so a full preamble measured ~6150 in production (Darryl's nit).
+    for (let i = 0; i < 40; i++) seed(`BULK ${i} ` + "z".repeat(460), "warm", undefined, "v4");
+    for (let i = 0; i < 10; i++) seed(`BULK HOT ${i} ` + "z".repeat(460), "hot", undefined, "v4");
+    expect(recallForPrompt("v4", "anything").length).toBeLessThanOrEqual(PREAMBLE_MAX_CHARS);
+  });
+});
