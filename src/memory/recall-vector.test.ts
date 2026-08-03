@@ -45,8 +45,8 @@ const noEmbedder = () => vi.stubGlobal("fetch", vi.fn(async () => { throw new Er
 beforeAll(noEmbedder);
 afterEach(noEmbedder);
 
-function seed(content: string, category: "hot" | "warm" | "cold" | "shared", vec?: number[]) {
-  const id = saveMemory({ agentId: "v", content, category });
+function seed(content: string, category: "hot" | "warm" | "cold" | "shared", vec?: number[], agent = "v") {
+  const id = saveMemory({ agentId: agent, content, category });
   if (vec) getDb().prepare("UPDATE memories SET embedding = ? WHERE id = ?").run(encodeEmbedding(vec), id);
   return id;
 }
@@ -141,5 +141,20 @@ describe("topical must not be starved by a large hot/warm bundle", () => {
     const out = recallForPrompt("v", "kilakoltatas", V(3));
     expect(out).toContain("eviction and notary undertaking");
     expect(out.length).toBeLessThanOrEqual(PREAMBLE_MAX_CHARS + 200);
+  });
+});
+
+describe("every tier gets a guaranteed slice, none starves another", () => {
+  it("long hot memories cannot push warm out of the preamble entirely", () => {
+    // Measured in production: marveen/darryl/cfo were getting 8 hot + 3 topical and ZERO warm, because
+    // hot entries are long and strict priority let them eat the whole non-topical budget. Warm is the
+    // stable-facts tier (preferences, config, project context), so losing it entirely is a correctness
+    // problem, not a cosmetic one. My topical reserve made it worse: it took its slice off the top and
+    // left even less for warm.
+    for (let i = 0; i < 12; i++) seed(`HOT LONG ${i} ` + "h".repeat(480), "hot", undefined, "v2");
+    for (let i = 0; i < 12; i++) seed(`WARM FACT ${i} owner preference number ${i}`, "warm", undefined, "v2");
+    const out = recallForPrompt("v2", "anything");
+    expect(out).toContain("HOT LONG");
+    expect(out).toContain("WARM FACT");
   });
 });

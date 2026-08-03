@@ -33,14 +33,21 @@ describe("recallForPrompt — bounded session-start preamble", () => {
     expect(out).toContain("more memories not shown"); // truncation is disclosed, not silent
   });
 
-  it("prioritizes hot over warm when the budget is tight", () => {
-    // Fill the budget entirely with hot so warm is pushed out — hot is active work, must win the space.
+  it("hot LEADS and takes the most space, but can no longer eliminate warm entirely", () => {
+    // POLICY CHANGED 2026-08-03, deliberately. This used to assert warm was dropped completely when hot
+    // filled the budget. Production showed what that costs: marveen, darryl and cfo were waking with 8
+    // hot memories and ZERO warm, so an agent recalled its active work and none of the owner's stable
+    // preferences or project context. Warm now has a guaranteed floor. Hot still leads, appears first
+    // and gets the largest share; it simply cannot starve the tier that holds "how the owner wants
+    // things done".
     for (let i = 0; i < 30; i++) saveMemory({ agentId: "prio", category: "hot", content: `HOT${i}-${"a".repeat(450)}` });
-    saveMemory({ agentId: "prio", category: "warm", content: "WARM-should-be-dropped" });
+    saveMemory({ agentId: "prio", category: "warm", content: "WARM-stable-fact" });
 
     const out = recallForPrompt("prio", "");
     expect(out).toContain("HOT0");
-    expect(out).not.toContain("WARM-should-be-dropped");
+    expect(out).toContain("WARM-stable-fact");
+    expect(out.indexOf("HOT0")).toBeLessThan(out.indexOf("WARM-stable-fact")); // hot still reads first
+    expect((out.match(/- \(hot\)/g) ?? []).length).toBeGreaterThan((out.match(/- \(warm\)/g) ?? []).length);
   });
 
   it("surfaces a small agent's memory fully and untruncated", () => {

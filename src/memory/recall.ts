@@ -17,6 +17,13 @@ const MAX_ALWAYS = 200; // candidate cap on hot+warm before the byte budget trim
  * correct code that never once appeared in a preamble. Hot still leads; warm yields the slice.
  */
 const TOPICAL_RESERVE_FRACTION = 0.3;
+/**
+ * Guaranteed floor for the stable-facts tier. Measured in production: marveen, darryl and cfo were
+ * getting 8 hot + 3 topical and ZERO warm, because hot entries are long and strict priority let them
+ * consume everything. Warm carries preferences, config and project context, so an agent waking with
+ * none of it recalls its active work and forgets how the owner wants things done.
+ */
+const WARM_RESERVE_FRACTION = 0.3;
 const MAX_CONTENT_CHARS = 500; // truncate any single memory so one entry can't dominate
 // Hard cap on the WHOLE preamble. It is pane-injected onto the first message via the send-keys path,
 // so an unbounded preamble (measured 30KB+ for a memory-heavy agent, ~100KB worst-case) both stresses
@@ -87,29 +94,46 @@ export function recallForPrompt(agentId: string, prompt: string, queryVector?: n
   // budget and meaning-matched memories never appear. Take topical first against its reserve, then let
   // hot and warm fill everything else. Output order is unchanged (hot, warm, topical) so the preamble
   // still reads active-work first.
-  const reserve = Math.floor(PREAMBLE_MAX_CHARS * TOPICAL_RESERVE_FRACTION);
-  const topicalLines: string[] = [];
-  let topicalUsed = 0;
-  for (const r of topical) {
-    const l = line(r);
-    if (topicalUsed + l.length + 1 > reserve) break;
-    topicalLines.push(l);
-    topicalUsed += l.length + 1;
-  }
+  // Each tier gets a GUARANTEED slice first, then whatever is left over is offered back in priority
+  // order. Strict priority alone starves whatever sits last, and it starved a different tier at every
+  // stage of this work: first topical (never appeared at all), then warm (dropped to zero once topical
+  // took its reserve). A tier that can be reduced to nothing by a verbose neighbour is not a priority
+  // order, it is a lottery.
+  const budget = PREAMBLE_MAX_CHARS;
+  const fill = (rows: MemoryRow[], cap: number, taken: Set<number>) => {
+    const out: string[] = [];
+    let used = 0;
+    for (const r of rows) {
+      if (taken.has(r.id)) continue;
+      const l = line(r);
+      if (used + l.length + 1 > cap) continue; // skip, do not break: a shorter later entry still fits
+      taken.add(r.id);
+      out.push(l);
+      used += l.length + 1;
+    }
+    return { out, used };
+  };
 
-  const ordered = [...hot, ...warm];
-  const picked: string[] = [];
-  let used = topicalUsed;
-  for (const r of ordered) {
-    const l = line(r);
-    if (used + l.length + 1 > PREAMBLE_MAX_CHARS) break;
-    picked.push(l);
-    used += l.length + 1;
-  }
-  picked.push(...topicalLines);
+  const taken = new Set<number>();
+  const topicalSlice = fill(topical, Math.floor(budget * TOPICAL_RESERVE_FRACTION), taken);
+  const warmSlice = fill(warm, Math.floor(budget * WARM_RESERVE_FRACTION), taken);
+  const hotSlice = fill(hot, budget - topicalSlice.used - warmSlice.used, taken);
+  // Leftovers flow back in priority order: active work first, then stable facts, then topical.
+  let spare = budget - topicalSlice.used - warmSlice.used - hotSlice.used;
+  const extraHot = fill(hot, spare, taken);
+  spare -= extraHot.used;
+  const extraWarm = fill(warm, spare, taken);
+  spare -= extraWarm.used;
+  const extraTopical = fill(topical, spare, taken);
+
+  const picked = [
+    ...hotSlice.out, ...extraHot.out,
+    ...warmSlice.out, ...extraWarm.out,
+    ...topicalSlice.out, ...extraTopical.out,
+  ];
   if (picked.length === 0) return "";
 
-  const dropped = ordered.length + topical.length - picked.length;
+  const dropped = hot.length + warm.length + topical.length - picked.length;
   const body =
     dropped > 0
       ? `${picked.join("\n")}\n- (… ${dropped} more memories not shown — search your memory for specifics.)`
