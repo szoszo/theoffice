@@ -210,3 +210,47 @@ export function searchMemoriesByVector(a: VectorSearchArgs): MemoryRow[] {
       return row as MemoryRow;
     });
 }
+
+/**
+ * On-demand memory search, meaning FIRST and keywords SECOND.
+ *
+ * Backs GET /api/memories?q=, which is the path an agent uses when it deliberately goes looking —
+ * including because the recall preamble tells it to. Until 2026-08-03 that path was keyword-only, so
+ * the automatic slice understood meaning while the deliberate search did not.
+ *
+ * Vector hits lead because ftsQuery OR-joins stopwords and collapses to "most recent". Keyword hits
+ * still fill the remaining slots, because they beat vectors at exact strings: invoice numbers, ids,
+ * account numbers, proper nouns. Embedding is best-effort with a short leash — if it fails, this
+ * returns precisely what searchMemories would have.
+ */
+export async function searchMemoriesHybrid(
+  a: SearchArgs & { embedTimeoutMs?: number }
+): Promise<MemoryRow[]> {
+  const limit = Math.min(a.limit ?? 50, 500);
+  const keyword = () => searchMemories({ ...a, limit });
+  if (!a.q || !a.q.trim()) return keyword();
+
+  let qv: number[] | null = null;
+  try {
+    qv = await Promise.race([
+      generateEmbedding(a.q),
+      new Promise<null>((r) => setTimeout(() => r(null), a.embedTimeoutMs ?? 2500)),
+    ]);
+  } catch {
+    qv = null; // search must never fail because the embedder is unavailable
+  }
+  if (!qv?.length) return keyword();
+
+  const out: MemoryRow[] = [];
+  const seen = new Set<number>();
+  for (const r of [
+    ...searchMemoriesByVector({ agentId: a.agentId, category: a.category, queryVector: qv, limit }),
+    ...keyword(),
+  ]) {
+    if (out.length >= limit) break;
+    if (seen.has(r.id)) continue;
+    seen.add(r.id);
+    out.push(r);
+  }
+  return out;
+}

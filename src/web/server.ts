@@ -12,7 +12,7 @@ import { loadAgents } from "../agents.js";
 import { loadScheduledTasks } from "../scheduler/index.js";
 import { sendAgentMessage } from "../bus/index.js";
 import { enqueueOutbound } from "../queue/index.js";
-import { saveMemory, searchMemories } from "../memory/store.js";
+import { saveMemory, searchMemories, searchMemoriesHybrid } from "../memory/store.js";
 import { computeUsage, WINDOW_MS } from "./usage.js";
 import { checkUpdates, applyUpdate } from "./update.js";
 import { runEmergencyRestart } from "./emergency.js";
@@ -489,7 +489,8 @@ async function handleApi(
 
   // GET /api/memories  POST /api/memories
   if (path === "/api/memories" && m === "GET") {
-    const rows = searchMemories({
+    // Hybrid: meaning first, keywords second. Falls back to keyword-only if the embedder is down.
+    const rows = await searchMemoriesHybrid({
       agentId: url.searchParams.get("agent") ?? undefined,
       q: url.searchParams.get("q") ?? undefined,
       category: (url.searchParams.get("category") as MemoryTier) ?? undefined,
