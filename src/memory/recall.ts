@@ -41,6 +41,14 @@ const TOPICAL_RESERVE_FRACTION = 0.3;
  * none of it recalls its active work and forgets how the owner wants things done.
  */
 const WARM_RESERVE_FRACTION = 0.3;
+/**
+ * Memories at or above this salience are CORE: facts the agent should simply know, loaded on every
+ * wake before anything else competes. This is the answer to "I do not want to say how many bedrooms
+ * the rental unit has more than once" — searching can find it, but only an always-loaded fact means never
+ * being asked again. Curated deliberately; promoting everything would defeat it.
+ */
+const CORE_SALIENCE = 5;
+const CORE_RESERVE_FRACTION = 0.25;
 const MAX_CONTENT_CHARS = 500; // truncate any single memory so one entry can't dominate
 // Hard cap on the WHOLE preamble. It is pane-injected onto the first message via the send-keys path,
 // so an unbounded preamble (measured 30KB+ for a memory-heavy agent, ~100KB worst-case) both stresses
@@ -75,8 +83,9 @@ export function recallForPrompt(agentId: string, prompt: string, queryVector?: n
   // always-bundle is never crowded out by newer history; the topical fetch likewise asks SQL for cold/shared
   // only, so FTS hits in hot/warm can't displace the topical matches. (idx_memories_agent_cat covers both.)
   const always = searchMemories({ agentId, category: ["hot", "warm"], limit: MAX_ALWAYS });
-  const hot = always.filter((m) => m.category === "hot");
-  const warm = always.filter((m) => m.category === "warm");
+  const core = always.filter((m) => m.salience >= CORE_SALIENCE);
+  const hot = always.filter((m) => m.category === "hot" && m.salience < CORE_SALIENCE);
+  const warm = always.filter((m) => m.category === "warm" && m.salience < CORE_SALIENCE);
   // Topical = MEANING first, keywords second.
   //
   // Vector hits lead because FTS topical search is measurably poor here: ftsQuery OR-joins every token
@@ -146,11 +155,12 @@ export function recallForPrompt(agentId: string, prompt: string, queryVector?: n
   };
 
   const taken = new Set<number>();
+  const coreSlice = fill(core, Math.floor(budget * CORE_RESERVE_FRACTION), taken);
   const topicalSlice = fill(topical, Math.floor(budget * TOPICAL_RESERVE_FRACTION), taken);
   const warmSlice = fill(warm, Math.floor(budget * WARM_RESERVE_FRACTION), taken);
-  const hotSlice = fill(hot, budget - topicalSlice.used - warmSlice.used, taken);
+  const hotSlice = fill(hot, budget - coreSlice.used - topicalSlice.used - warmSlice.used, taken);
   // Leftovers flow back in priority order: active work first, then stable facts, then topical.
-  let spare = budget - topicalSlice.used - warmSlice.used - hotSlice.used;
+  let spare = budget - coreSlice.used - topicalSlice.used - warmSlice.used - hotSlice.used;
   const extraHot = fill(hot, spare, taken);
   spare -= extraHot.used;
   const extraWarm = fill(warm, spare, taken);
@@ -158,13 +168,14 @@ export function recallForPrompt(agentId: string, prompt: string, queryVector?: n
   const extraTopical = fill(topical, spare, taken);
 
   const picked = [
+    ...coreSlice.out,
     ...hotSlice.out, ...extraHot.out,
     ...warmSlice.out, ...extraWarm.out,
     ...topicalSlice.out, ...extraTopical.out,
   ];
   if (picked.length === 0) return "";
 
-  const dropped = hot.length + warm.length + topical.length - picked.length;
+  const dropped = core.length + hot.length + warm.length + topical.length - picked.length;
   const body =
     dropped > 0
       ? `${picked.join("\n")}\n- (… ${dropped} more memories not shown — search your memory for specifics.)`

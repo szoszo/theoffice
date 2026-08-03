@@ -182,3 +182,17 @@ describe("the documented cap covers the WHOLE preamble, frame included", () => {
     expect(recallForPrompt("v4", "anything").length).toBeLessThanOrEqual(PREAMBLE_MAX_CHARS);
   });
 });
+
+describe("CORE facts are always known, never competing for scraps", () => {
+  it("a high-salience fact loads even when hundreds of ordinary memories exist", () => {
+    for (let i = 0; i < 60; i++) seed(`ordinary warm ${i} ` + "w".repeat(430), "warm", undefined, "v5");
+    for (let i = 0; i < 10; i++) seed(`ordinary hot ${i} ` + "h".repeat(430), "hot", undefined, "v5");
+    const id = seed("CORE FACT: the flat has 3 rooms and is 73 m2", "warm", undefined, "v5");
+    getDb().prepare("UPDATE memories SET salience = 5.0 WHERE id = ?").run(id);
+    const out = recallForPrompt("v5", "good morning");
+    // The point of a core tier: the owner should never have to answer "how many rooms" twice, so this
+    // fact must load on EVERY wake regardless of how much else has accumulated. Salience-ordering alone
+    // was not enough - the real flat-specs memory missed the warm slice by about 100 chars.
+    expect(out).toContain("CORE FACT");
+  });
+});

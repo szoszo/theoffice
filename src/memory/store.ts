@@ -143,8 +143,10 @@ export function searchMemories(a: SearchArgs): MemoryRow[] {
   params.push(limit);
   return db
     .prepare(
+      // salience FIRST: it is the only way a curated core fact ("the flat is 3 rooms") can outrank 377
+      // newer warm memories for the handful of always-loaded slots. Recency breaks ties.
       `SELECT m.id, m.agent_id, m.category, m.content, m.keywords, m.salience, m.created_at, m.accessed_at
-       FROM memories m ${clause} ORDER BY m.created_at DESC LIMIT ?`
+       FROM memories m ${clause} ORDER BY m.salience DESC, m.created_at DESC LIMIT ?`
     )
     .all(...params) as MemoryRow[];
 }
@@ -244,7 +246,12 @@ export async function searchMemoriesHybrid(
   // Give each side a GUARANTEED share instead of concatenating. Straight concatenation let the vector
   // side fill every slot, so a query for an exact invoice number returned 8 semantically-adjacent rows
   // and not the row containing the string. Same starvation the topical reserve fixes in recall.
-  const vectorShare = Math.max(1, Math.ceil(limit / 2));
+  // Keywords get a SMALL absolute share, never half. FTS output here is measurably noisy, so at a
+  // small limit a half-share pushed the correct semantic answer out of the results entirely: asking
+  // "how many rooms does the rental flat have" with limit=3 returned two vector hits plus one piece of
+  // FTS noise, dropping the flat-specs memory that scored 0.641 and ranked 3rd.
+  const keywordShare = Math.min(2, Math.max(0, limit - 3));
+  const vectorShare = limit - keywordShare;
   const vecHits = searchMemoriesByVector({
     agentId: a.agentId,
     category: a.category,
@@ -265,8 +272,8 @@ export async function searchMemoriesHybrid(
       max--;
     }
   };
-  take(vecHits, vectorShare);          // meaning leads
-  take(kwHits, limit - out.length);    // keywords get the rest, guaranteed
-  take(vecHits, limit - out.length);   // any slots keywords did not use go back to meaning
+  take(vecHits, vectorShare);          // meaning leads and gets the bulk
+  take(kwHits, keywordShare);          // keywords get a small guaranteed share (exact ids, numbers)
+  take(vecHits, limit - out.length);   // anything keywords did not use goes back to meaning
   return out;
 }
