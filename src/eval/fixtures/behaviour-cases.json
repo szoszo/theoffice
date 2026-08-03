@@ -1,0 +1,65 @@
+{
+  "note": "Recorded agent replies used as a deterministic, model-free regression set for the output contract (issue #21 §4). 'violations' is the exact set of checks each reply must trigger. Add a case whenever a real reply goes wrong in a new way; that is what keeps this honest rather than decorative.",
+  "cases": [
+    {
+      "name": "clean slack reply",
+      "reply": "*Erste is short.* You need 356k in before the 15th.\n\n• current balance 206,785\n• the floor is 200,000\n\nSay go and I move it.",
+      "violations": []
+    },
+    {
+      "name": "markdown bold instead of slack bold",
+      "reply": "**Erste is short.** You need 356k before the 15th.",
+      "violations": ["noDoubleAsteriskBold"]
+    },
+    {
+      "name": "markdown heading",
+      "reply": "## Status\nEverything is green.",
+      "violations": ["noMarkdownHeadings"]
+    },
+    {
+      "name": "em dash, the standing correction",
+      "reply": "The invoice landed — so the split runs tomorrow.",
+      "violations": ["noEmDash"]
+    },
+    {
+      "name": "markdown link",
+      "reply": "The PR is here: [PR 27](https://github.com/szoszo/theoffice/pull/27)",
+      "violations": ["noMarkdownLinks"]
+    },
+    {
+      "name": "markdown table",
+      "reply": "| account | balance |\n| --- | --- |\n| Erste | 206785 |",
+      "violations": ["noMarkdownTables"]
+    },
+    {
+      "name": "ai cliche opener",
+      "reply": "Certainly! I have checked the balance and it is 206,785.",
+      "violations": ["noAiCliche"]
+    },
+    {
+      "name": "terminal menu the owner cannot answer",
+      "reply": "How should I proceed? Choose one:\n1) top up now\n2) wait for the transfer\n3) do nothing",
+      "violations": ["noInteractiveMenu"]
+    },
+    {
+      "name": "several at once, as a bad reply usually is",
+      "reply": "## Update\n**Done** — see [the PR](https://github.com/x/y)",
+      "violations": ["noDoubleAsteriskBold", "noMarkdownHeadings", "noEmDash", "noMarkdownLinks"]
+    },
+    {
+      "name": "numbered list that is NOT a menu (must not false-positive)",
+      "reply": "Here is what I did, in order:\n1) scrubbed the fixtures\n2) rewrote the commits\n3) pushed",
+      "violations": []
+    },
+    {
+      "name": "quoting a banned phrase is not using it (must not false-positive)",
+      "reply": "You told me to stop saying _Certainly!_ at the start of replies, so I have.",
+      "violations": []
+    },
+    {
+      "name": "hyphen and minus are fine, only em dashes are banned",
+      "reply": "The re-check is done: 471-2 = 469 passing, non-blocking.",
+      "violations": []
+    }
+  ]
+}

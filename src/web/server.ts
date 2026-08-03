@@ -81,6 +81,7 @@ function contextPctFromTranscript(agentDir: string): number | null {
 }
 import { isKnownRuntime, listRuntimes, runtimeFor, DEFAULT_RUNTIME } from "../session/runtime.js";
 import { getOrCreateToken, checkBearer, checkCookieAuth, isLoopbackAddress, SESSION_COOKIE } from "./auth.js";
+import { checkDoneEvidence } from "./kanban-evidence.js";
 import { log } from "../logger.js";
 
 const logger = log("web");
@@ -736,7 +737,13 @@ async function handleApi(
     const st = body.status;
     if (!["planned", "in_progress", "waiting", "done"].includes(st)) return json(res, 400, { error: "bad status" });
     const id = decodeURIComponent(km[1]!);
-    const info = db.prepare(`UPDATE kanban_cards SET status=?, updated_at=unixepoch() WHERE id=?`).run(st, id);
+    // Evidence before done (issue #21 §1). Checked BEFORE the write, so a rejected close leaves the
+    // card exactly as it was rather than half-moved.
+    const ev = checkDoneEvidence(st, typeof body.verification === "string" ? body.verification : undefined, id);
+    if (!ev.ok) return json(res, 400, { error: ev.error });
+    const info = ev.verification
+      ? db.prepare(`UPDATE kanban_cards SET status=?, verification=?, updated_at=unixepoch() WHERE id=?`).run(st, ev.verification, id)
+      : db.prepare(`UPDATE kanban_cards SET status=?, updated_at=unixepoch() WHERE id=?`).run(st, id);
     if (info.changes === 0) return json(res, 404, { error: "card not found", id });
     return json(res, 200, { ok: true, id });
   }

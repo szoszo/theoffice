@@ -56,6 +56,16 @@ export const MIGRATIONS: Migration[] = [
     sql: `ALTER TABLE inbound_queue ADD COLUMN session_ref TEXT;
           ALTER TABLE inbound_queue ADD COLUMN requeues INTEGER NOT NULL DEFAULT 0;`,
   },
+  {
+    version: 4,
+    name: "kanban evidence-before-done",
+    // Issue #21 §1. A card could reach 'done' on an agent's word alone, and "reports success on work
+    // that silently did not land" is the most common agent failure there is. The column holds what
+    // was actually run and what came back, so the claim survives the request and can be read later.
+    // Nullable and unenforced at the DB level on purpose: every historical card predates the rule,
+    // and rewriting history to satisfy a new guard would be inventing evidence that never existed.
+    sql: `ALTER TABLE kanban_cards ADD COLUMN verification TEXT;`,
+  },
 ];
 
 /** Highest known schema version (the baseline, or the max migration version). */
