@@ -128,3 +128,18 @@ describe("recallForPromptAsync — the embedder can never block a delivery", () 
     expect(await recallForPromptAsync("v", "kilakoltatas")).toContain("joint liability");
   });
 });
+
+describe("topical must not be starved by a large hot/warm bundle", () => {
+  it("a semantic hit still appears when hot+warm alone exceed the whole budget", () => {
+    // The live failure this pins, found by checking production instead of trusting the suite: marveen
+    // has 26 hot + 378 warm memories, roughly 197,000 chars after the per-entry cap, against a 6,000
+    // char budget. Under strict hot -> warm -> topical priority the loop breaks long before topical,
+    // so vector search was correct and STRUCTURALLY UNREACHABLE. Any agent with more than a dozen
+    // warm memories had the same silent starvation.
+    for (let i = 0; i < 60; i++) seed(`WARM FILLER ${i} ` + "x".repeat(400), "warm");
+    seed("the eviction and notary undertaking", "cold", V(3));
+    const out = recallForPrompt("v", "kilakoltatas", V(3));
+    expect(out).toContain("eviction and notary undertaking");
+    expect(out.length).toBeLessThanOrEqual(PREAMBLE_MAX_CHARS + 200);
+  });
+});

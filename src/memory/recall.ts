@@ -8,6 +8,15 @@ const VECTOR_FLOOR = 0.42;
 /** The embedder sits on the session-start prime path, so it gets a short leash, not the 20s default. */
 const RECALL_EMBED_TIMEOUT_MS = 2500;
 const MAX_ALWAYS = 200; // candidate cap on hot+warm before the byte budget trims further
+/**
+ * Share of the budget RESERVED for topical (meaning-matched) memories.
+ *
+ * Without a reserve, strict hot -> warm -> topical priority starves topical completely: marveen alone
+ * has 26 hot + 378 warm memories, ~197,000 chars after the per-entry cap, against a 6,000 char budget.
+ * The fill loop breaks long before it reaches a topical entry, so semantic recall would have been
+ * correct code that never once appeared in a preamble. Hot still leads; warm yields the slice.
+ */
+const TOPICAL_RESERVE_FRACTION = 0.3;
 const MAX_CONTENT_CHARS = 500; // truncate any single memory so one entry can't dominate
 // Hard cap on the WHOLE preamble. It is pane-injected onto the first message via the send-keys path,
 // so an unbounded preamble (measured 30KB+ for a memory-heavy agent, ~100KB worst-case) both stresses
@@ -74,18 +83,33 @@ export function recallForPrompt(agentId: string, prompt: string, queryVector?: n
 
   // Fill the byte budget in strict priority order; stop at the first entry that would overflow so the
   // most important tiers always win the space (a later, smaller entry never displaces a higher-priority one).
-  const ordered = [...hot, ...warm, ...topical];
+  // Reserve a slice for topical BEFORE filling hot/warm, otherwise a big always-bundle eats the whole
+  // budget and meaning-matched memories never appear. Take topical first against its reserve, then let
+  // hot and warm fill everything else. Output order is unchanged (hot, warm, topical) so the preamble
+  // still reads active-work first.
+  const reserve = Math.floor(PREAMBLE_MAX_CHARS * TOPICAL_RESERVE_FRACTION);
+  const topicalLines: string[] = [];
+  let topicalUsed = 0;
+  for (const r of topical) {
+    const l = line(r);
+    if (topicalUsed + l.length + 1 > reserve) break;
+    topicalLines.push(l);
+    topicalUsed += l.length + 1;
+  }
+
+  const ordered = [...hot, ...warm];
   const picked: string[] = [];
-  let used = 0;
+  let used = topicalUsed;
   for (const r of ordered) {
     const l = line(r);
     if (used + l.length + 1 > PREAMBLE_MAX_CHARS) break;
     picked.push(l);
     used += l.length + 1;
   }
+  picked.push(...topicalLines);
   if (picked.length === 0) return "";
 
-  const dropped = ordered.length - picked.length;
+  const dropped = ordered.length + topical.length - picked.length;
   const body =
     dropped > 0
       ? `${picked.join("\n")}\n- (… ${dropped} more memories not shown — search your memory for specifics.)`
