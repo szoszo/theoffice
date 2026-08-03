@@ -239,7 +239,7 @@ async function deliverClaude(cfg: EngineConfig, agent: AgentDef, item: QueuedIte
     try {
       // Operator goals (framing) + recalled memory, assembled WITHIN one pane-inject budget so the
       // combined preamble never overloads the send-keys path. Best-effort; missing bits are no-ops. See goals.ts.
-      const pre = firstMessagePreamble(cfg, item.agent_id, item.prompt);
+      const pre = await firstMessagePreamble(cfg, item.agent_id, item.prompt);
       if (pre) text = `${pre}\n\n${text}`;
     } catch (err) {
       logger.warn({ agent: item.agent_id, err }, "first-message preamble failed (delivering without)");

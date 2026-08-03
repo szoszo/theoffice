@@ -1,6 +1,6 @@
 import { getDb } from "../db/index.js";
 import type { MemoryTier } from "../types.js";
-import { generateEmbedding, encodeEmbedding, EXPECTED_DIM } from "./embeddings.js";
+import { generateEmbedding, encodeEmbedding, decodeEmbedding, cosineSimilarity, EXPECTED_DIM } from "./embeddings.js";
 
 export interface SaveMemoryArgs {
   agentId: string;
@@ -158,4 +158,55 @@ function ftsQuery(q: string): string {
     .filter(Boolean)
     .map((t) => `"${t}"`);
   return terms.length ? terms.join(" OR ") : `""`;
+}
+
+export interface VectorSearchArgs {
+  agentId?: string;
+  category?: MemoryTier | MemoryTier[];
+  queryVector: number[];
+  limit?: number;
+  /** minimum cosine similarity to be worth surfacing at all */
+  floor?: number;
+}
+
+/**
+ * Rank memories by MEANING against a query vector.
+ *
+ * Measured need: over the real corpus, FTS topical search returned the same irrelevant row for five
+ * unrelated queries, because ftsQuery OR-joins stopwords so nearly everything matches and the result
+ * collapses to "most recent". Vectors put the right memory first in 4 of those 5.
+ *
+ * Scored in JS rather than SQL because SQLite has no vector type here; at a few thousand rows this is
+ * a sub-millisecond scan. Every comparison goes through cosineSimilarity, which returns 0 on a length
+ * mismatch, so a legacy or malformed vector is ranked out rather than raw-indexed (Toby's gate).
+ */
+export function searchMemoriesByVector(a: VectorSearchArgs): MemoryRow[] {
+  const cats = a.category ? (Array.isArray(a.category) ? a.category : [a.category]) : [];
+  const where: string[] = ["embedding IS NOT NULL"];
+  const params: unknown[] = [];
+  if (a.agentId) {
+    where.push("agent_id = ?");
+    params.push(a.agentId);
+  }
+  if (cats.length) {
+    where.push(`category IN (${cats.map(() => "?").join(",")})`);
+    params.push(...cats);
+  }
+  const rows = getDb()
+    .prepare(
+      `SELECT id, agent_id, category, content, keywords, salience, created_at, accessed_at, embedding
+         FROM memories WHERE ${where.join(" AND ")}`
+    )
+    .all(...params) as (MemoryRow & { embedding: string })[];
+
+  const floor = a.floor ?? 0.3;
+  return rows
+    .map((r) => ({ r, score: cosineSimilarity(a.queryVector, decodeEmbedding(r.embedding) ?? []) }))
+    .filter((x) => x.score >= floor)
+    .sort((x, y) => y.score - x.score)
+    .slice(0, a.limit ?? 6)
+    .map(({ r }) => {
+      const { embedding: _drop, ...row } = r;
+      return row as MemoryRow;
+    });
 }

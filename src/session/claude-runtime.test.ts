@@ -45,7 +45,12 @@ vi.mock("../queue/index.js", () => ({
   requeue: () => {},
 }));
 vi.mock("../memory/conversation.js", () => ({ recordInbound: () => {} }));
-vi.mock("../memory/recall.js", () => ({ recallForPrompt: () => "MEM_PREAMBLE_SENTINEL", PREAMBLE_MAX_CHARS: 6000 }));
+vi.mock("../memory/recall.js", () => ({
+  // The prime path now awaits recallForPromptAsync (recall embeds the prompt to search by meaning).
+  recallForPromptAsync: async () => "MEM_PREAMBLE_SENTINEL",
+  recallForPrompt: () => "MEM_PREAMBLE_SENTINEL",
+  PREAMBLE_MAX_CHARS: 6000,
+}));
 vi.mock("../env.js", () => ({ readEnvFile: () => ({}) }));
 
 import { claudeRuntime } from "./claude-runtime.js";

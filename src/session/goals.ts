@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { EngineConfig } from "../types.js";
-import { recallForPrompt, PREAMBLE_MAX_CHARS } from "../memory/recall.js";
+import { recallForPromptAsync, PREAMBLE_MAX_CHARS } from "../memory/recall.js";
 
 /**
  * The operator's goals layer (issue #21 §3). A tenant-level `tenant/GOALS.md` — a handful of
@@ -43,8 +43,10 @@ export function goalsForPrompt(cfg: EngineConfig, budget: number = GOALS_MAX_CHA
  * within the single PREAMBLE_MAX_CHARS budget. Memory takes its full budget first (never starved); goals
  * fills only the remainder. Combined length is always <= PREAMBLE_MAX_CHARS.
  */
-export function firstMessagePreamble(cfg: EngineConfig, agentId: string, prompt: string): string {
-  const mem = recallForPrompt(agentId, prompt); // already <= PREAMBLE_MAX_CHARS
+export async function firstMessagePreamble(cfg: EngineConfig, agentId: string, prompt: string): Promise<string> {
+  // Async only because recall now embeds the prompt to search by meaning. That embed is bounded and
+  // optional: down or slow degrades to the keyword-only preamble rather than delaying the delivery.
+  const mem = await recallForPromptAsync(agentId, prompt); // already <= PREAMBLE_MAX_CHARS
   const sep = mem ? 2 : 0; // the "\n\n" that will join goals to mem
   const goalsBudget = Math.max(0, PREAMBLE_MAX_CHARS - mem.length - sep);
   const goals = goalsForPrompt(cfg, goalsBudget);

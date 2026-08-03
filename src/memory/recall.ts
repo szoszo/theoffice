@@ -1,7 +1,12 @@
-import { searchMemories, type MemoryRow } from "./store.js";
+import { searchMemories, searchMemoriesByVector, type MemoryRow } from "./store.js";
+import { generateEmbedding } from "./embeddings.js";
 
 // How much memory to surface when an agent is primed at the start of a session.
 const MAX_TOPICAL = 6; // cold/shared memories matched to the incoming message
+/** Below this cosine, a "semantic match" is noise. Empirically 0.30 is unrelated, 0.50+ is on-topic. */
+const VECTOR_FLOOR = 0.42;
+/** The embedder sits on the session-start prime path, so it gets a short leash, not the 20s default. */
+const RECALL_EMBED_TIMEOUT_MS = 2500;
 const MAX_ALWAYS = 200; // candidate cap on hot+warm before the byte budget trims further
 const MAX_CONTENT_CHARS = 500; // truncate any single memory so one entry can't dominate
 // Hard cap on the WHOLE preamble. It is pane-injected onto the first message via the send-keys path,
@@ -26,7 +31,7 @@ function line(r: MemoryRow): string {
  * This is the deterministic counterpart to the "load your memory at session start" instruction in each
  * agent's CLAUDE.md: the engine guarantees a bounded recall even when the agent forgets to ask for it.
  */
-export function recallForPrompt(agentId: string, prompt: string): string {
+export function recallForPrompt(agentId: string, prompt: string, queryVector?: number[]): string {
   // Filter the tiers in SQL, not after a category-blind fetch. The old `searchMemories({limit:200})` returned
   // the 200 most-recent rows of ANY tier, so an agent with >200 newer cold/shared memories pushed its hot+warm
   // out of the window entirely and they vanished from the preamble. `category IN ('hot','warm')` guarantees the
@@ -35,9 +40,37 @@ export function recallForPrompt(agentId: string, prompt: string): string {
   const always = searchMemories({ agentId, category: ["hot", "warm"], limit: MAX_ALWAYS });
   const hot = always.filter((m) => m.category === "hot");
   const warm = always.filter((m) => m.category === "warm");
-  const topical = prompt.trim()
-    ? searchMemories({ agentId, q: prompt, category: ["cold", "shared"], limit: MAX_TOPICAL })
-    : [];
+  // Topical = MEANING first, keywords second.
+  //
+  // Vector hits lead because FTS topical search is measurably poor here: ftsQuery OR-joins every token
+  // including stopwords, so nearly every row matches and ORDER BY created_at DESC collapses the result
+  // to "the newest memory". Over the real corpus it returned the SAME irrelevant row for five unrelated
+  // queries. Keywords still earn their place for things vectors are bad at (invoice numbers, ids, exact
+  // names), so they fill whatever slots remain rather than being dropped.
+  const topical: MemoryRow[] = [];
+  if (prompt.trim()) {
+    const seen = new Set<number>();
+    const push = (rows: MemoryRow[]) => {
+      for (const r of rows) {
+        if (topical.length >= MAX_TOPICAL) return;
+        if (seen.has(r.id)) continue;
+        seen.add(r.id);
+        topical.push(r);
+      }
+    };
+    if (queryVector?.length) {
+      push(
+        searchMemoriesByVector({
+          agentId,
+          category: ["cold", "shared"],
+          queryVector,
+          limit: MAX_TOPICAL,
+          floor: VECTOR_FLOOR,
+        })
+      );
+    }
+    push(searchMemories({ agentId, q: prompt, category: ["cold", "shared"], limit: MAX_TOPICAL }));
+  }
 
   // Fill the byte budget in strict priority order; stop at the first entry that would overflow so the
   // most important tiers always win the space (a later, smaller entry never displaces a higher-priority one).
@@ -63,4 +96,29 @@ export function recallForPrompt(agentId: string, prompt: string): string {
     body,
     "[End of memory.]",
   ].join("\n");
+}
+
+/**
+ * Async wrapper: embed the incoming prompt, then recall with meaning as well as keywords.
+ *
+ * The embedder is on the session-start prime path, so it is strictly optional. Down, slow, or timed
+ * out all resolve to `undefined`, which makes recallForPrompt behave EXACTLY as it does today. A
+ * memory-search improvement must never be able to delay or fail a delivery.
+ */
+export async function recallForPromptAsync(
+  agentId: string,
+  prompt: string,
+  timeoutMs: number = RECALL_EMBED_TIMEOUT_MS
+): Promise<string> {
+  let qv: number[] | undefined;
+  try {
+    const v = await Promise.race([
+      generateEmbedding(prompt),
+      new Promise<null>((res) => setTimeout(() => res(null), timeoutMs)),
+    ]);
+    qv = v ?? undefined;
+  } catch {
+    qv = undefined; // never let the embedder break the prime
+  }
+  return recallForPrompt(agentId, prompt, qv);
 }
