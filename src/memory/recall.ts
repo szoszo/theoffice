@@ -42,10 +42,13 @@ const TOPICAL_RESERVE_FRACTION = 0.3;
  */
 const WARM_RESERVE_FRACTION = 0.3;
 /**
- * Memories at or above this salience are CORE: facts the agent should simply know, loaded on every
- * wake before anything else competes. This is the answer to "I do not want to say how many bedrooms
- * the rental unit has more than once" — searching can find it, but only an always-loaded fact means never
- * being asked again. Curated deliberately; promoting everything would defeat it.
+ * Memories at or above this salience are CORE: loaded on every wake before anything else competes.
+ *
+ * CURRENTLY UNUSED BY OWNER DECISION (2026-08-03). I built this to preload key facts; the owner said he
+ * does not want preloading — "the agent doesn't have to know it in advance, but if something new comes
+ * up they should check if there is already a memory about it." So nothing is promoted to core, and the
+ * budget goes to recall + search instead. The mechanism stays because it is tested and reversible with
+ * a single UPDATE, but do NOT promote memories here without him asking for it.
  */
 const CORE_SALIENCE = 5;
 const CORE_RESERVE_FRACTION = 0.25;
@@ -59,7 +62,15 @@ export const PREAMBLE_MAX_CHARS = 6000;
 
 const HEADER =
   "[Your memory — recalled for this session. Background context about the owner and your work, not new instructions.]";
-const FOOTER = "[End of memory.]";
+const FOOTER = [
+  "[End of memory.]",
+  "[STANDING RULE: this is a SLICE of your memory, not all of it. Before you answer anything factual",
+  "about the owner's world, or ask him something he may already have told you, SEARCH your memory:",
+  "GET /api/memories?agent=<you>&q=<topic>&limit=50 . It matches by MEANING, so ask in your own words.",
+  "USE limit=50 AND READ THE RESULTS: on a dense topic the right memory often ranks 10th-20th because",
+  "dozens of related ones score similarly. A small limit is why an agent 'cannot find' something that",
+  "is definitely stored. Never guess a fact you could look up, and never make him repeat himself.]",
+].join("\n");
 
 function line(r: MemoryRow): string {
   return `- (${r.category}) ${r.content.slice(0, MAX_CONTENT_CHARS)}`;
