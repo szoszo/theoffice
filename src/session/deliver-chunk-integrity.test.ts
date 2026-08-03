@@ -25,6 +25,10 @@ const h = vi.hoisted(() => ({
   clears: 0,
   /** 0-based index of the chunk whose send-keys should fail; -1 = all succeed. */
   failChunkAt: -1,
+  /** How many ATTEMPTS at that chunk fail before it lands. Infinity = it never lands. */
+  failTimes: Number.POSITIVE_INFINITY,
+  /** Attempts made at the failing chunk, so a retry is distinguishable from a fresh chunk. */
+  attemptsAtFail: 0,
   chunkCount: 0,
   paneState: "idle" as string,
   /** What the pane reports AFTER a chunk fails — live, it is mid-render i.e. "busy". */
@@ -42,13 +46,15 @@ vi.mock("./tmux.js", () => ({
   capturePane: () => "PANE",
   newSession: () => true,
   sendText: (_socket: string, _name: string, text: string) => {
-    const isFail = h.chunkCount === h.failChunkAt;
-    h.chunkCount++;
-    if (isFail) {
+    // A retry re-sends the SAME chunk, so failure is keyed to the chunk POSITION and the attempt
+    // count at it — the position only advances once the chunk actually lands.
+    if (h.chunkCount === h.failChunkAt && h.attemptsAtFail < h.failTimes) {
+      h.attemptsAtFail++;
       if (h.paneStateAfterFail != null) h.paneState = h.paneStateAfterFail;
       if (h.boxEmptyAfterFail != null) h.boxEmpty = h.boxEmptyAfterFail;
       return false; // tmux returned non-zero / timed out
     }
+    h.chunkCount++;
     h.sent.push(text);
     return true;
   },
@@ -89,6 +95,8 @@ beforeEach(() => {
   h.clears = 0;
   h.chunkCount = 0;
   h.failChunkAt = -1;
+  h.failTimes = Number.POSITIVE_INFINITY;
+  h.attemptsAtFail = 0;
   h.paneState = "idle";
   h.paneStateAfterFail = null;
   h.boxEmpty = true;
@@ -248,5 +256,51 @@ describe("pre-send guard must ask PROVABLE EMPTINESS, not the classifier (Michae
     const res = await deliverPrompt("test", "agent-x", PROMPT);
     expect(res.reason).toBe("not-ready");
     expect(h.clears).toBe(0); // busy check runs FIRST, deliberately
+  });
+});
+
+/**
+ * Ported from the parallel fork (Iustinianus, 9027d63) during the 2026-08-03 consolidation.
+ *
+ * Our abort path was already the stricter one — it clears the draft and VERIFIES the box is empty,
+ * distinguishing send-failed from dirty-pane. What it lacked was a retry: a chunk rejected because
+ * tmux was momentarily busy (or hit the spawnSync timeout) aborted a whole delivery that would have
+ * succeeded on the next attempt. Requeueing works, but it costs a round trip and, on a message that
+ * keeps hitting a busy pane, can look like an agent going deaf.
+ *
+ * The distinction that makes retrying safe: a TRANSIENT rejection clears on its own, a DETERMINISTIC
+ * one never does. The known deterministic case — a chunk starting with "-" being parsed as a tmux
+ * flag — is fixed at the source by the `--` terminator (also theirs, 2979d89), so a bounded retry
+ * here cannot mask it.
+ */
+describe("a transient chunk rejection is retried before the delivery is abandoned", () => {
+  it("a chunk that fails once and then lands delivers the WHOLE prompt, not a hole", async () => {
+    h.failChunkAt = 2;
+    h.failTimes = 1; // transient: the retry succeeds
+    const res = await deliverPrompt("test", "agent-x", PROMPT);
+
+    expect(res.ok).toBe(true);
+    expect(injected()).toBe(PROMPT); // every byte, in order
+    expect(h.keys).toContain("Enter");
+  });
+
+  it("retries are BOUNDED — a chunk that never lands still aborts rather than looping forever", async () => {
+    h.failChunkAt = 2;
+    h.failTimes = Number.POSITIVE_INFINITY;
+    const res = await deliverPrompt("test", "agent-x", PROMPT);
+
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe("send-failed");
+    expect(h.keys).not.toContain("Enter");
+    expect(h.attemptsAtFail).toBeLessThanOrEqual(6); // bounded, not unbounded
+  });
+
+  it("the retry does not re-type what already landed (no duplicated chunk)", async () => {
+    // Retrying the FAILED burst is correct; re-typing the prompt from the start would duplicate
+    // everything before the failure inside the input box.
+    h.failChunkAt = 1;
+    h.failTimes = 2;
+    await deliverPrompt("test", "agent-x", PROMPT);
+    expect(injected()).toBe(PROMPT);
   });
 });

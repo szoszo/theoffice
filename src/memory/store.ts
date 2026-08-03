@@ -122,10 +122,13 @@ export function searchMemories(a: SearchArgs): MemoryRow[] {
   const limit = Math.min(a.limit ?? 50, 500);
   const where: string[] = [];
   const params: unknown[] = [];
+  const hasQuery = !!(a.q && a.q.trim());
 
-  if (a.q && a.q.trim()) {
-    where.push("m.id IN (SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?)");
-    params.push(ftsQuery(a.q));
+  // With a query, join the FTS table so bm25() is available to ORDER BY; without one there is
+  // nothing to be relevant TO, and the always-loaded bundle depends on salience ordering.
+  if (hasQuery) {
+    where.push("memories_fts MATCH ?");
+    params.push(ftsQuery(a.q!));
   }
   if (a.agentId) {
     where.push("m.agent_id = ?");
@@ -141,24 +144,46 @@ export function searchMemories(a: SearchArgs): MemoryRow[] {
   }
   const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
   params.push(limit);
-  return db
-    .prepare(
-      // salience FIRST: it is the only way a curated core fact ("the flat is 3 rooms") can outrank 377
-      // newer warm memories for the handful of always-loaded slots. Recency breaks ties.
-      `SELECT m.id, m.agent_id, m.category, m.content, m.keywords, m.salience, m.created_at, m.accessed_at
-       FROM memories m ${clause} ORDER BY m.salience DESC, m.created_at DESC LIMIT ?`
-    )
-    .all(...params) as MemoryRow[];
+
+  const cols = "m.id, m.agent_id, m.category, m.content, m.keywords, m.salience, m.created_at, m.accessed_at";
+  const sql = hasQuery
+    ? // bm25() returns a NEGATIVE score where more-negative is a better match, so plain ASC is
+      // best-first. Salience stays as the tie-break: between two equally relevant memories, the
+      // curated fact should still beat the passing mention.
+      `SELECT ${cols} FROM memories_fts JOIN memories m ON m.id = memories_fts.rowid
+       ${clause} ORDER BY bm25(memories_fts), m.salience DESC LIMIT ?`
+    : // salience FIRST: it is the only way a curated core fact can outrank hundreds of newer warm
+      // memories for the handful of always-loaded slots. Recency breaks ties.
+      `SELECT ${cols} FROM memories m ${clause} ORDER BY m.salience DESC, m.created_at DESC LIMIT ?`;
+
+  return db.prepare(sql).all(...params) as MemoryRow[];
 }
 
-/** Sanitize free text into a safe FTS5 MATCH query (quoted terms, OR-joined). */
+/**
+ * Stopwords, English + Hungarian, because the store is bilingual and a Hungarian question would
+ * otherwise drag in every row containing "a" or "az". Deliberately short: this list exists to stop
+ * function words dominating bm25, not to do linguistics. Over-trimming would break exact-string
+ * recall, which is the one thing keywords are better than vectors at.
+ */
+const STOPWORDS = new Set([
+  "a", "an", "the", "and", "or", "of", "to", "in", "on", "at", "is", "are", "was", "were", "be",
+  "for", "with", "by", "it", "this", "that", "as", "from", "how", "what", "who", "when", "where",
+  "do", "does", "did", "i", "you", "he", "she", "we", "they", "my", "your",
+  "az", "és", "vagy", "hogy", "nem", "igen", "van", "volt", "lesz", "egy", "ez", "azt", "mi",
+  "ki", "mikor", "hol", "hogyan", "meg", "el", "ha", "de", "is", "csak", "már", "még",
+]);
+
+/** Sanitize free text into a safe FTS5 MATCH query (quoted terms, OR-joined, stopwords dropped). */
 function ftsQuery(q: string): string {
-  const terms = q
+  const all = q
     .toLowerCase()
     .replace(/["()*]/g, " ")
     .split(/\s+/)
-    .filter(Boolean)
-    .map((t) => `"${t}"`);
+    .filter(Boolean);
+  // Drop stopwords — but if that empties the query, keep the original terms. A query of only
+  // function words is still a query, and an empty MATCH is an FTS syntax error, not an empty result.
+  const kept = all.filter((t) => !STOPWORDS.has(t));
+  const terms = (kept.length ? kept : all).map((t) => `"${t}"`);
   return terms.length ? terms.join(" OR ") : `""`;
 }
 

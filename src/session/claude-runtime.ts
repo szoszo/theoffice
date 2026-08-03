@@ -25,6 +25,8 @@ const logger = log("session");
 // Tunables (ported from v1's hard-won values).
 const CHUNK = 180; // chars per send-keys -l burst
 const SETTLE_CHUNK_MS = 30; // between chunks
+const CHUNK_RETRY_MAX = 3; // re-sends of a single burst tmux rejected (ported from fork 9027d63)
+const CHUNK_RETRY_MS = 50; // pause before re-sending that burst
 const SETTLE_BEFORE_ENTER_MS = 150; // let bracketed-paste finish before Enter
 const SUBMIT_RETRY_MAX = 4; // retry-Enter attempts after the first send
 const SUBMIT_RETRY_POLL_MS = 1000; // wait between confirm samples
@@ -148,7 +150,18 @@ export async function deliverPrompt(socket: string, session: string, prompt: str
   // Clear the partial draft and fail — deliverClaude requeues every reason except "wedged", so the
   // message is retried WHOLE instead of arriving corrupt.
   for (let i = 0; i < prompt.length; i += CHUNK) {
-    if (!sendText(socket, session, prompt.slice(i, i + CHUNK))) {
+    // Retry the REJECTED burst (not the whole prompt — re-typing from the start would duplicate
+    // everything already in the box). A rejection is either transient (tmux busy, or the spawnSync
+    // timeout) and clears on the next attempt, or deterministic and never clears; the one known
+    // deterministic case, a burst starting with "-" being read as a tmux flag, is fixed at source by
+    // the `--` terminator in sendText, so a bounded retry here cannot paper over it.
+    const chunk = prompt.slice(i, i + CHUNK);
+    let landed = false;
+    for (let attempt = 0; attempt <= CHUNK_RETRY_MAX && !landed; attempt++) {
+      if (attempt > 0) await sleep(CHUNK_RETRY_MS);
+      landed = sendText(socket, session, chunk);
+    }
+    if (!landed) {
       // Refusing to submit is NOT enough: whatever we already typed stays parked in the input box and
       // the next delivery to press Enter submits it (kanban b4802f1d — six aborted copies plus an
       // owner message arrived as one prompt). Clear what we typed and VERIFY the box is actually empty.
