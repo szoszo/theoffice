@@ -6,6 +6,7 @@ import type { EngineConfig, AgentDef } from "../types.js";
 import { log } from "../logger.js";
 import { newSession } from "./tmux.js";
 import { writeAgentSettings } from "./profile.js";
+import { linkTenantSkills } from "./skills-link.js";
 import { markDelivering, markDelivered, markFailed, requeue, requeueNoPenalty, MAX_DELIVERY_ATTEMPTS } from "../queue/index.js";
 import { recordInbound } from "../memory/conversation.js";
 import type { Runtime, QueuedItem } from "./runtime.js";
@@ -83,6 +84,7 @@ export function launchGeminiHolder(cfg: EngineConfig, agent: AgentDef): boolean 
   const session = `agent-${agent.id}`;
   const command = ["bash", "-lc", "echo 'gemini holder (work runs via agy --print)'; exec sleep infinity"];
   writeAgentSettings(cfg, agent); // keep the security profile regen parity with the claude/codex paths
+  linkTenantSkills(cfg.paths.skillsDir, agent.dir); // parity with the claude path
   // Antigravity's `agy` reads its persona/instructions from AGENTS.md, NOT CLAUDE.md (verified live
   // 2026-06-15: without this, agy thinks it's a generic "Antigravity" assistant and ignores the agent's
   // role + the office-say reply protocol). Expose the agent's CLAUDE.md as AGENTS.md via a relative

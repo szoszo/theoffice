@@ -6,6 +6,7 @@ import type { EngineConfig, AgentDef } from "../types.js";
 import { log } from "../logger.js";
 import { newSession } from "./tmux.js";
 import { writeAgentSettings } from "./profile.js";
+import { linkTenantSkills } from "./skills-link.js";
 import { markDelivering, markDelivered, markFailed, requeue, requeueNoPenalty, MAX_DELIVERY_ATTEMPTS } from "../queue/index.js";
 import { recordInbound } from "../memory/conversation.js";
 import type { Runtime, QueuedItem } from "./runtime.js";
@@ -85,6 +86,7 @@ export function launchCodexHolder(cfg: EngineConfig, agent: AgentDef): boolean {
   // benign idle process; never accepts injected input — codex work is the exec subprocess
   const command = ["bash", "-lc", "echo 'codex holder (work runs via codex exec)'; exec sleep infinity"];
   writeAgentSettings(cfg, agent); // keep the security profile regen parity with the claude path
+  linkTenantSkills(cfg.paths.skillsDir, agent.dir); // parity with the claude path
   const ok = newSession(cfg.tmux.socket, session, { cwd: agent.dir, command, env: codexEnv(cfg, agent) });
   logger.info({ agent: agent.id, session, ok }, ok ? "launched codex holder" : "codex holder skipped (exists?)");
   return ok;

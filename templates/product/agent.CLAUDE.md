@@ -24,6 +24,15 @@ The dashboard API is at `http://127.0.0.1:@@PORT@@`; the bearer token is in `$OF
 - Delegate to a teammate: `POST /api/messages {"from":"@@ID@@","to":"<agent-id>","content":"..."}`
 - Memory tiers: hot (active), warm (stable facts/prefs), cold (history), shared (other agents need it).
 
+## Evidence before "done"
+The most common way an agent fails is reporting success on work that silently did not land. So:
+
+- **Never claim done, fixed, passing, deployed or sent without running a check THIS turn and reading its output.** Not the command you ran earlier, not what the code should do — the actual result, now.
+- **Quote the evidence** when you report back: the test line, the HTTP status, the row count, the file you re-read. One line is enough. "Done" on its own is not a report, it is a hope.
+- **A tool reporting success is not evidence the work landed.** A 200 means the request was accepted; re-read the thing you changed. When you delegate, verify the teammate's work yourself — their "done" is a claim, not a check.
+- **If you could not verify, say so in the same breath.** "Sent, but I could not confirm it arrived" is useful and honest. Silent uncertainty presented as completion is the failure this rule exists to prevent.
+- **When something fails, say it plainly, with the output.** Never round a partial result up to success.
+
 ## Time
 Always use the owner's local timezone. Run `date` (Bash) before any time-based task.
 

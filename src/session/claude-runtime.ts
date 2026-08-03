@@ -7,6 +7,7 @@ import { capturePane, clearInput, hasSession, newSession, sendKey, sendText, ses
 import { withPaneLock } from "./pane-lock.js";
 import { detectPaneState, decideSubmitFollowup, inputBoxProvablyEmptyStyled, stripPaneStyling } from "./pane-state.js";
 import { writeAgentSettings } from "./profile.js";
+import { linkTenantSkills } from "./skills-link.js";
 import { ensureClaudeGatesAccepted } from "./trust.js";
 import { markDelivering, markDelivered, markFailed, requeue } from "../queue/index.js";
 import { recordInbound } from "../memory/conversation.js";
@@ -214,6 +215,7 @@ function launchClaude(cfg: EngineConfig, agent: AgentDef): boolean {
   const env = buildAgentEnv(cfg, agent);
   // regenerate the agent's security profile (connector + filesystem deny) before launch
   writeAgentSettings(cfg, agent);
+  linkTenantSkills(cfg.paths.skillsDir, agent.dir);
   // pre-accept Claude's two startup gates (folder trust + the bypass-permissions
   // disclaimer); otherwise a fresh pane blocks on an interactive dialog forever and
   // never reaches idle, so the deliverer can never hand it a message. Idempotent.
