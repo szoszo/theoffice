@@ -80,7 +80,7 @@ function contextPctFromTranscript(agentDir: string): number | null {
   }
 }
 import { isKnownRuntime, listRuntimes, runtimeFor, DEFAULT_RUNTIME } from "../session/runtime.js";
-import { getOrCreateToken, checkBearer, checkCookieAuth, isLoopbackAddress, SESSION_COOKIE } from "./auth.js";
+import { getOrCreateToken, checkBearer } from "./auth.js";
 import { checkDoneEvidence } from "./kanban-evidence.js";
 import { log } from "../logger.js";
 
@@ -203,7 +203,7 @@ export function startServer(cfg: EngineConfig): () => void {
       // tab (old/wrong token, polling) lock out the legitimate session on the same IP. By gating the
       // block on auth failure, brute-force (no/wrong token) is still throttled while a correct token
       // can never be collateral-blocked.
-      if (checkBearer(req.headers.authorization, token) || checkCookieAuth(req.headers.cookie, token)) {
+      if (checkBearer(req.headers.authorization, token)) {
         if (rlMap.has(ip)) rlMap.delete(ip); // success clears any accrued strikes/blocks for this IP
       } else {
         let existing = rlMap.get(ip);
@@ -244,53 +244,6 @@ export function startServer(cfg: EngineConfig): () => void {
         return json(res, 500, { error: "server error" });
       }
     }
-    // Issue #5: the static UI shell used to be served to anyone who could reach the port, so a LAN
-    // bind handed the dashboard to every device on the network. The gate keys on whether the REQUEST
-    // arrived over loopback — deliberately socket.remoteAddress and never X-Forwarded-For, which the
-    // client controls. A local browser is unaffected; a LAN client must log in.
-    const local = isLoopbackAddress(req.socket.remoteAddress);
-    const authed = checkBearer(req.headers.authorization, token) || checkCookieAuth(req.headers.cookie, token);
-
-    if (path === "/login" && req.method === "POST") {
-      // Rate-limited on the SAME counter as /api. Without this the login form would be an
-      // unthrottled brute-force oracle for the very token /api is throttled to protect.
-      const ip = getClientIp(req, cfg.web.trustedProxyToken);
-      const rl = cfg.web.rateLimit || { maxFails: 5, windowMs: 900000, blockMs: 60000, maxBlockMs: 3600000 };
-      const nowMs = _now();
-      const blocked = rlMap.get(ip);
-      if (blocked && blocked.blockedUntil > nowMs) {
-        res.setHeader("Retry-After", Math.ceil((blocked.blockedUntil - nowMs) / 1000).toString());
-        return json(res, 429, { error: "too many attempts" });
-      }
-      const body = await readBody(req, res);
-      if (body == null) return;
-      let submitted = "";
-      try {
-        submitted = String((JSON.parse(body) as { token?: unknown }).token ?? "");
-      } catch {
-        submitted = "";
-      }
-      if (!checkBearer(`Bearer ${submitted}`, token)) {
-        const e: RLEntry = rlMap.get(ip) ?? { fails: 0, blockedUntil: 0, lastFail: nowMs, blocks: 0 };
-        e.fails++;
-        e.lastFail = nowMs;
-        if (e.fails >= rl.maxFails) {
-          e.blocks++;
-          e.blockedUntil = nowMs + Math.min(rl.maxBlockMs ?? 3600000, rl.blockMs * Math.pow(2, e.blocks - 1));
-          e.fails = 0;
-        }
-        rlMap.set(ip, e);
-        return json(res, 401, { error: "unauthorized" });
-      }
-      rlMap.delete(ip);
-      // httpOnly so a UI-side script bug cannot exfiltrate the token; SameSite=Strict so a foreign
-      // page cannot ride the session. No Secure flag: this is commonly served over plain http on a
-      // LAN, and setting it there would silently drop the cookie and make login appear to do nothing.
-      res.setHeader("Set-Cookie", `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000`);
-      return json(res, 200, { ok: true });
-    }
-
-    if (!local && !authed) return serveLogin(res);
     return serveStatic(res, path);
   };
 
@@ -913,36 +866,6 @@ function parseJson(s: string): JsonBody | null {
   } catch {
     return null;
   }
-}
-
-/**
- * Minimal login screen for non-loopback clients (issue #5). Inline and dependency-free — the server
- * is hand-rolled node:http and the UI bundle itself is behind this gate, so it cannot be used to
- * render it. Deliberately reveals nothing: no version, no agent names, no hostname.
- */
-function serveLogin(res: ServerResponse): void {
-  const html = `<!doctype html><meta charset="utf-8"><title>The Office</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-:root{color-scheme:light dark}
-body{font:16px/1.5 system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0}
-form{display:grid;gap:.75rem;width:min(22rem,90vw)}
-h1{font-size:1.1rem;margin:0 0 .5rem}
-input,button{font:inherit;padding:.6rem .7rem;border-radius:.4rem;border:1px solid #8888}
-button{cursor:pointer}
-#e{color:#c00;min-height:1.2em;font-size:.9rem}
-</style>
-<form id="f"><h1>The Office</h1>
-<input id="t" type="password" placeholder="Dashboard token" autocomplete="current-password" autofocus>
-<button>Sign in</button><div id="e"></div></form>
-<script>
-f.onsubmit=async ev=>{ev.preventDefault();e.textContent="";
- const r=await fetch("/login",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token:t.value})});
- if(r.ok){location.reload();return}
- e.textContent=r.status===429?"Too many attempts. Wait and try again.":"Wrong token.";};
-</script>`;
-  res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-  res.end(html);
 }
 
 function serveStatic(res: ServerResponse, path: string): void {
