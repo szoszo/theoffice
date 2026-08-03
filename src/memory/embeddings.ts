@@ -12,8 +12,8 @@
  * null / 0 instead of throwing, and callers treat a missing vector as "fall back to keywords".
  */
 
-const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://127.0.0.1:11434";
-const EMBED_MODEL = process.env.EMBED_MODEL ?? "nomic-embed-text";
+export const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://127.0.0.1:11434";
+export const EMBED_MODEL = process.env.EMBED_MODEL ?? "nomic-embed-text";
 /** Matches the old ClaudeClaw generator, so backfilled and live vectors stay comparable. */
 const MAX_INPUT_CHARS = 2000;
 /**

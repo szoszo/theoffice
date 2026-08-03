@@ -37,6 +37,10 @@ the metered SDK), but earns reliability from two structural choices:
 
 - **Per-agent Slack identities** — DM each agent directly; replies come back as that agent.
 - **Memory** (tiers + FTS search), **kanban**, **scheduler** (cron), **inter-agent bus**, heartbeats.
+- **Semantic recall** — agents also search memory by *meaning*, not just keywords, so a fact saved
+  once is found however the question is phrased. Optional (needs a local Ollama); keyword search
+  works with no setup at all. Setup + `npm run memory:status` in
+  [`docs/MEMORY-SEMANTIC-RECALL.md`](docs/MEMORY-SEMANTIC-RECALL.md).
 - **Web dashboard** (`:3430`) — agents (live state, model, security profile), memory browser with
   tier filters, a real kanban board, human-readable schedules, token-usage by time window, live
   controls (set an agent's model, restart/start/stop, enable/disable, move/archive kanban cards), and
