@@ -387,15 +387,65 @@ export function shouldRetrySubmit(pane: string, payloadHint: string, opts: { min
   return box.includes(payloadHint);
 }
 
+/**
+ * POSITIVE proof a just-sent prompt was actually SUBMITTED — not merely "not visibly parked".
+ *
+ * The confirm loop used to call a submit "done" whenever shouldRetrySubmit returned false. But that
+ * function also returns false when the input box cannot be LOCATED (liveInputBoxRange === null), and the
+ * box goes unlocatable exactly when a TALL parked payload pushes its top separator off the captured pane.
+ * So a long owner message that never submitted (its Enter was dropped) read as delivered and the agent
+ * sat silent — dwight (a message plus a `[Pasted text]` block of 8 photos) and marveen, 2026-08-04, ~20
+ * min of owner-visible silence. This is the same "a box we cannot SEE is not proof" inversion the PRE-send
+ * gate already fixed in inputBoxProvablyEmptyStyled; the confirm side needs the mirror of it.
+ *
+ * Submission is proven ONLY by a positive signal: the agent has started a turn (a busy indicator is up),
+ * or the composer is PROVABLY EMPTY (styling-aware, so the dim ghost hint a successful submit leaves is
+ * de-fainted to empty and never mistaken for parked text). Anything else — payload still parked, box not
+ * locatable, a modal, an unknown frame — is NOT proof. Takes the STYLED (`capture-pane -e`) snapshot, the
+ * only view the emptiness check can trust; the busy scan runs on the fully-stripped text.
+ */
+export function submitConfirmed(styledPane: string | null): boolean {
+  if (!styledPane || !styledPane.trim()) return false;
+  const plain = stripPaneStyling(styledPane);
+  for (const rx of BUSY_INDICATORS) if (rx.test(plain)) return true;
+  return inputBoxProvablyEmptyStyled(styledPane);
+}
+
+/**
+ * True when it is SAFE to press Enter again during submit-confirm: the pane is idle (a live idle footer,
+ * no busy signal). Enter on such a pane either submits parked text or no-ops on the dim ghost hint — both
+ * harmless. Deliberately does NOT require the payload to be locatable, so a tall parked payload (top
+ * separator scrolled off) still gets its retry-Enters instead of being abandoned on the first sample.
+ *
+ * The load-bearing exclusion is a MODAL: a usage-limit or permission menu carries NO idle footer, so it
+ * fails this test and never receives an Enter — pressing Enter there could select "Upgrade" (a charge to
+ * the owner) or blind-approve a dangerous action. Those panes fall through to give-up (requeue) and are
+ * left for the session-hygiene sweeper, which alone knows the safe keystroke.
+ */
+export function safeToResubmit(pane: string): boolean {
+  if (!pane || !pane.trim()) return false;
+  const plain = stripPaneStyling(pane);
+  for (const rx of BUSY_INDICATORS) if (rx.test(plain)) return false;
+  return IDLE_FOOTER_RX.test(plain);
+}
+
 export type SubmitFollowupAction = "retry-enter" | "done" | "give-up";
 
 /**
  * Decide the next action of the post-send confirm loop. Pure so the I/O loop in
  * session-manager stays trivially testable.
- *   - pane === null (capture failed)         -> give-up
- *   - prompt no longer parked / pane busy    -> done
- *   - parked + retry budget remaining        -> retry-enter
- *   - parked + budget spent                  -> give-up
+ *   - pane === null (capture failed)                       -> give-up (requeue)
+ *   - submission POSITIVELY confirmed (busy / box empty)   -> done
+ *   - unconfirmed, budget spent                            -> give-up (requeue)
+ *   - unconfirmed, pane safe to Enter, budget remaining    -> retry-enter
+ *   - unconfirmed, pane NOT safe to Enter (modal/unknown)  -> give-up (requeue)
+ *
+ * "done" now requires POSITIVE proof (submitConfirmed), not just the absence of a visibly-parked payload.
+ * That closes the false-delivery where a tall unsubmitted message (input box unlocatable) read as
+ * delivered and stranded the agent for ~20 min (dwight + marveen, 2026-08-04). An unproven submit is
+ * retried while the pane is safe to Enter, and otherwise requeued WHOLE — never silently marked delivered.
+ * payloadHint is retained for signature stability; the decision no longer depends on matching it, because
+ * matching a visibly-parked payload is exactly what failed when the box scrolled out of view.
  */
 export function decideSubmitFollowup(
   pane: string | null,
@@ -404,7 +454,8 @@ export function decideSubmitFollowup(
   maxAttempts: number
 ): SubmitFollowupAction {
   if (pane == null) return "give-up";
-  if (!shouldRetrySubmit(pane, payloadHint)) return "done";
+  if (submitConfirmed(pane)) return "done";
   if (attempt >= maxAttempts) return "give-up";
-  return "retry-enter";
+  if (safeToResubmit(pane)) return "retry-enter";
+  return "give-up";
 }

@@ -181,10 +181,13 @@ export async function deliverPrompt(socket: string, session: string, prompt: str
   await sleep(SETTLE_BEFORE_ENTER_MS);
   sendKey(socket, session, "Enter");
 
-  // Confirm the submit actually landed; retry Enter within a bounded budget. STYLED again, because the
-  // ghost hint a successful submit leaves behind IS the prompt we just sent: on a plain capture the box
-  // "contains the payload", the loop calls a landed message stuck, burns its budget and reports
-  // submit-give-up, and the deliverer requeues a message the agent already has.
+  // Confirm the submit actually landed; retry Enter within a bounded budget. decideSubmitFollowup only
+  // reports "done" on POSITIVE proof (agent went busy, or the composer is provably empty) — never on the
+  // mere absence of a visibly-parked payload, which is how a TALL unsubmitted message whose box scrolled
+  // out of view was silently marked delivered and stranded the agent (dwight + marveen, 2026-08-04). An
+  // unproven submit is retried while the pane is safe to Enter, else requeued whole via submit-give-up.
+  // STYLED capture is required: the emptiness half of the proof must de-faint the dim ghost hint a
+  // successful submit leaves (that hint IS the prompt we sent) so a landed message reads empty, not stuck.
   const hint = prompt.slice(0, Math.min(prompt.length, 40));
   for (let attempt = 0; attempt <= SUBMIT_RETRY_MAX; attempt++) {
     await sleep(SUBMIT_RETRY_POLL_MS);

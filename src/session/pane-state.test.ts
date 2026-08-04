@@ -11,6 +11,8 @@ import {
   detectsPermissionPrompt,
   shouldRetrySubmit,
   decideSubmitFollowup,
+  submitConfirmed,
+  safeToResubmit,
   liveInputBox,
 } from "./pane-state.js";
 
@@ -121,6 +123,91 @@ describe("shouldRetrySubmit / decideSubmitFollowup", () => {
     expect(decideSubmitFollowup(clean, payload, 0, 4)).toBe("done");
     expect(decideSubmitFollowup(stuck, payload, 0, 4)).toBe("retry-enter");
     expect(decideSubmitFollowup(stuck, payload, 4, 4)).toBe("give-up");
+  });
+});
+
+/**
+ * 2026-08-04: dwight + marveen went silent ~20 min. The delivery worker typed each owner message in but
+ * the submit Enter was dropped; the message sat parked, yet the confirm loop marked it DELIVERED. Root
+ * cause: "done" was returned whenever the payload was not VISIBLY parked — and a TALL parked payload
+ * (dwight's message carried a `[Pasted text]` block of 8 photos) pushes the input box's top separator off
+ * the captured pane, so liveInputBoxRange returns null and the old shouldRetrySubmit read false = "done".
+ * The mirror of the pre-send inversion. The fix makes "done" require POSITIVE proof of submission.
+ */
+describe("submit-confirm requires positive proof (2026-08-04 strand regression)", () => {
+  const payload = "please summarize the quarterly report now";
+  // A box so tall its TOP separator scrolled off the capture — the exact live shape that stranded the
+  // agents. Only the bottom separator + footer are visible, so the input box cannot be located.
+  const tallStuck = [
+    "❯ residue starts here",
+    ...Array.from({ length: 40 }, (_, i) => `parked payload line ${i}`),
+    SEP,
+    FOOTER,
+  ].join("\n");
+  const clean = pane(SEP, "❯ ", SEP, FOOTER);
+  const stuck = pane(SEP, `❯ ${payload}`, SEP, FOOTER);
+  const busy = pane("✻ Thinking… (3s · ↓ 2.6k tokens · esc to interrupt)", SEP, "❯ ", SEP, FOOTER);
+  // Real usage-limit modal: no idle footer. Pressing Enter here could select "Upgrade" (owner charge).
+  const modal = pane(
+    "You've hit your session limit · resets 6:20am",
+    "What do you want to do?",
+    "❯ 1. Stop and wait for limit to reset",
+    "  2. Upgrade your plan",
+    "Enter to confirm · Esc to cancel"
+  );
+  // Styled dim ghost hint a SUCCESSFUL submit leaves — must read as confirmed-empty, not still-parked.
+  const SEP_S = "\x1b[38;5;244m" + "─".repeat(80);
+  const FOOTER_S =
+    "\x1b[39m  \x1b[38;5;211m⏵⏵ bypass permissions on\x1b[38;5;246m (shift+tab to cycle) · ← for agents\x1b[39m";
+  const ghost = [
+    "\x1b[39msome earlier reply",
+    SEP_S,
+    "\x1b[39m❯\xa0\x1b[2mapprove the pending travel bookings\x1b[0m",
+    SEP_S,
+    FOOTER_S,
+  ].join("\n");
+
+  it("THE BUG: a tall unsubmitted payload (box unlocatable) is NOT marked delivered", () => {
+    expect(liveInputBox(tallStuck)).toBeNull(); // documents why the old code failed
+    expect(submitConfirmed(tallStuck)).toBe(false);
+    // was "done" (silent false-delivery) before the fix; now retried, then requeued at budget.
+    expect(decideSubmitFollowup(tallStuck, payload, 0, 4)).toBe("retry-enter");
+    expect(decideSubmitFollowup(tallStuck, payload, 4, 4)).toBe("give-up");
+  });
+
+  it("submitConfirmed: proof is busy OR a provably-empty box, nothing less", () => {
+    expect(submitConfirmed(busy)).toBe(true); // agent started a turn
+    expect(submitConfirmed(clean)).toBe(true); // composer cleared
+    expect(submitConfirmed(ghost)).toBe(true); // dim ghost hint de-faints to empty
+    expect(submitConfirmed(stuck)).toBe(false); // payload still parked
+    expect(submitConfirmed(tallStuck)).toBe(false); // box unlocatable is NOT proof
+    expect(submitConfirmed(null)).toBe(false);
+  });
+
+  it("a genuine submit still confirms done (busy, empty, or dim ghost hint)", () => {
+    expect(decideSubmitFollowup(busy, payload, 0, 4)).toBe("done");
+    expect(decideSubmitFollowup(clean, payload, 0, 4)).toBe("done");
+    expect(decideSubmitFollowup(ghost, payload, 0, 4)).toBe("done");
+  });
+
+  it("FAST-TURN RACE (Michael 9498): turn ends before the poll, busy never sampled -> still done, no retry", () => {
+    // The false-NEGATIVE twin of the strand: a short turn submits AND finishes before the ~1s confirm
+    // sample, so the busy frame is never observed. Keying on busy ALONE would conclude not-delivered and
+    // re-Enter, double-submitting (the identical duplicate Michael received). The composer-cleared branch
+    // is the load-bearing proof here: payload gone from the box == submitted, even with no busy seen.
+    expect(submitConfirmed(ghost)).toBe(true); // busy absent, composer cleared to a dim ghost hint
+    expect(submitConfirmed(clean)).toBe(true); // busy absent, composer plainly empty
+    // done on the FIRST sample -> the loop returns before it ever presses Enter again.
+    expect(decideSubmitFollowup(ghost, payload, 0, 4)).toBe("done");
+    // Contrast: payload STILL in the box + idle is the ONLY true retry case.
+    expect(decideSubmitFollowup(stuck, payload, 0, 4)).toBe("retry-enter");
+  });
+
+  it("never presses Enter into a modal: unconfirmed + unsafe pane -> give-up (requeue), not retry", () => {
+    expect(safeToResubmit(modal)).toBe(false); // no idle footer -> not safe to Enter
+    expect(safeToResubmit(busy)).toBe(false);
+    expect(safeToResubmit(clean)).toBe(true);
+    expect(decideSubmitFollowup(modal, payload, 0, 4)).toBe("give-up");
   });
 });
 
