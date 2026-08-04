@@ -45,6 +45,14 @@ The default is multilingual because the store it was measured on is. If your mem
 are all in English, `nomic-embed-text` (with `EMBED_DIM=768`) is smaller, ~4x faster, and scored the
 same on English questions — set both env vars and re-run the backfill.
 
+> **The backfill is not optional, and skipping it fails SILENTLY.** Changing `EMBED_DIM` without
+> re-running the backfill leaves every existing row at the old width. `cosineSimilarity` returns 0 on a
+> length mismatch, so those rows do not error — they rank last and become invisible. Recall collapses
+> and *nothing alarms*: `countEmbeddings()` has no scheduled caller, so `wrongDim` can climb from 0 to
+> every row in the store with no owner-facing signal. Until a scheduled recall-health check exists
+> (kanban 62bd646d), the only way to know is to run `npm run memory:status` yourself and check
+> `wrongDim == 0` AFTER the backfill finishes. Verify, do not assume it completed.
+
 Measured on 12 real questions against 250 real memories, half the questions in a second language:
 
 | model              | recall@1 | recall@5 | non-English recall@1 |
