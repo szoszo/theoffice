@@ -118,3 +118,35 @@ describe("generateEmbedding — degrades, never throws", () => {
     expect(body.prompt.length).toBeLessThanOrEqual(2000);
   });
 });
+
+/**
+ * 2026-08-04 incident: 41 memories saved with no vector across ~1h45m, silently.
+ *
+ * Root cause was a CAPACITY interaction, not a bug in any one place. bge-m3 is 1.14GB against
+ * nomic's 274MB, and OLLAMA_KEEP_ALIVE=5m unloads it between sporadic saves — so a save that lands
+ * on a cold model pays a full model load. Measured on this box the same call took 3.9s, 7.0s and
+ * 30.3s within one minute. The 20s timeout was chosen for a warm 274MB model ("~1.4s per document
+ * warm"), and a cold 1.14GB load simply does not fit inside it.
+ *
+ * It failed SILENTLY because the save path is deliberately fire-and-forget: generateEmbedding
+ * returns null on timeout, the row keeps its NULL, and nothing retries or alarms. That is the right
+ * trade for a save (the memory is the asset, the vector is an enhancement) but it means the timeout
+ * must be generous enough that the normal case fits. Recall is unaffected either way — it races on
+ * its own RECALL_EMBED_TIMEOUT_MS (2.5s) and never waits on this one.
+ */
+describe("EMBED_TIMEOUT_MS — must tolerate a cold model load", () => {
+  it("defaults high enough for a cold 1.14GB load (measured worst case 30.3s)", async () => {
+    vi.resetModules();
+    delete process.env.EMBED_TIMEOUT_MS;
+    const m = await import("./embeddings.js?fresh-default");
+    expect(m.EMBED_TIMEOUT_MS).toBeGreaterThanOrEqual(60_000);
+  });
+
+  it("is env-overridable, so an operator can tune it without a rebuild", async () => {
+    vi.resetModules();
+    process.env.EMBED_TIMEOUT_MS = "12345";
+    const m = await import("./embeddings.js?fresh-override");
+    expect(m.EMBED_TIMEOUT_MS).toBe(12345);
+    delete process.env.EMBED_TIMEOUT_MS;
+  });
+});

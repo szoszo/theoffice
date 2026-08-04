@@ -44,8 +44,22 @@ const MAX_INPUT_CHARS = 2000;
  * Found by Toby's adversarial pass on fc077ea, 2026-08-03, before it could bite.
  */
 export const EXPECTED_DIM = Number(process.env.EMBED_DIM ?? 1024);
-/** Ollama is local; a hung request must not stall a memory save or a recall. */
-const TIMEOUT_MS = 20_000;
+/**
+ * Ollama is local, but "local" does not mean "fast on the first call". This budget has to cover a
+ * COLD MODEL LOAD, not just inference.
+ *
+ * 2026-08-04: 41 memories saved with no vector over ~1h45m and nothing reported it. bge-m3 is 1.14GB
+ * against nomic's 274MB, and OLLAMA_KEEP_ALIVE=5m unloads it between sporadic saves — so a save
+ * arriving on a cold model pays the whole load. The identical call measured 3.9s, 7.0s and 30.3s
+ * inside one minute on this box. The old 20s was sized for a warm 274MB model and a cold 1.14GB one
+ * does not fit in it, so every save that landed on a cold model silently kept its NULL.
+ *
+ * Generous is nearly free here: the save path is fire-and-forget (nobody is waiting), and recall
+ * never uses this budget — it races on its own RECALL_EMBED_TIMEOUT_MS of 2.5s. So the only thing a
+ * short timeout buys is silent data loss. Env-overridable so this can be tuned on a slower box
+ * without a rebuild.
+ */
+export const EMBED_TIMEOUT_MS = Number(process.env.EMBED_TIMEOUT_MS ?? 90_000);
 
 /** Cosine similarity, clamped to 0 for anything degenerate (empty, zero-norm, dimension mismatch). */
 export function cosineSimilarity(a: number[], b: number[]): number {
@@ -94,7 +108,7 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: EMBED_MODEL, prompt }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
     });
     if (!res.ok) return null;
     const data = (await res.json()) as { embedding?: unknown };
