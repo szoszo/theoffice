@@ -32,3 +32,14 @@ logs/
 # os / editor
 .DS_Store
 *.swp
+
+# python tooling byproducts (tools/oomwatch, tools/modal-sweeper) — never source
+__pycache__/
+*.pyc
+
+# in-place edit backups. These are point-in-time copies of live scripts; committing them
+# freezes a stale variant next to the real one and the next reader cannot tell which is
+# authoritative. Git already holds the history.
+*.bak
+*.bak-*
+*.bak.*
