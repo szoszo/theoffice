@@ -46,16 +46,41 @@ export function enqueueInbound(a: EnqueueArgs): number | undefined {
   return r.changes > 0 ? Number(r.lastInsertRowid) : undefined;
 }
 
-/** Oldest queued items, optionally for one agent. */
+/**
+ * Queued items in DELIVERY-PRIORITY order: owner (source='channel') messages first, everything else
+ * after, FIFO (id ASC) within each class. Before 2026-08-04 this was a flat id-ASC, so a live owner
+ * message queued behind stale scheduler heartbeats — including an already-moot 08:35 briefing — and
+ * waited turns for them to drain. The CASE keeps the owner lane ahead without starving the rest: within
+ * a class it is still oldest-first. Mirrors queueSourceRank() in policy.ts (kept in sync by test).
+ */
 export function listQueued(agentId?: string, limit = 50): InboundItem[] {
   const db = getDb();
+  const ORDER = `ORDER BY CASE WHEN source='channel' THEN 0 ELSE 1 END, id ASC`;
   const sql = agentId
     ? `SELECT id, agent_id, source, prompt, reply_channel, reply_user, attempts FROM inbound_queue
-       WHERE status='queued' AND agent_id=? ORDER BY id ASC LIMIT ?`
+       WHERE status='queued' AND agent_id=? ${ORDER} LIMIT ?`
     : `SELECT id, agent_id, source, prompt, reply_channel, reply_user, attempts FROM inbound_queue
-       WHERE status='queued' ORDER BY id ASC LIMIT ?`;
+       WHERE status='queued' ${ORDER} LIMIT ?`;
   const stmt = db.prepare(sql);
   return (agentId ? stmt.all(agentId, limit) : stmt.all(limit)) as InboundItem[];
+}
+
+/**
+ * Drop queued scheduler heartbeats that have aged past usefulness (a briefing hours late is moot, and
+ * spending an agent turn on it delays live work). Fails ONLY status='queued' source='scheduler' rows
+ * older than maxAgeSec — owner ('channel'), inter-agent ('bus'), 'manual' and 'system' rows are never
+ * age-dropped. attempts=0 rows (never even attempted) are the target; a moot heartbeat should cost zero
+ * turns, not five. maxAgeSec <= 0 disables the sweep. Returns the number of rows dropped. Idempotent.
+ */
+export function reapStaleScheduler(maxAgeSec: number): number {
+  if (maxAgeSec <= 0) return 0;
+  return getDb()
+    .prepare(
+      `UPDATE inbound_queue SET status='failed',
+         last_error='stale: scheduler heartbeat superseded before delivery (queued > ' || ? || 's)'
+       WHERE status='queued' AND source='scheduler' AND created_at < (unixepoch() - ?)`
+    )
+    .run(maxAgeSec, maxAgeSec).changes;
 }
 
 export function markDelivering(id: number): void {
@@ -117,6 +142,57 @@ export function requeueNoPenalty(id: number): void {
 
 export function markFailed(id: number, err: string): void {
   getDb().prepare(`UPDATE inbound_queue SET status='failed', last_error=? WHERE id=?`).run(err, id);
+}
+
+// ---- owner-delivery watchdog (an owner message must NEVER go unheard, dropped OR merely stuck) ----
+
+export interface OwnerAlarmRow {
+  id: number;
+  agent_id: string;
+  status: string;
+  attempts: number;
+  reply_channel: string | null;
+  prompt: string;
+  age_sec: number;
+  /** true when this row is a hard drop (status=failed); false when it is a queued-but-stuck stall. */
+  dropped: boolean;
+}
+
+/**
+ * The single STATE-OBSERVER for owner (source='channel') messages that need an alarm. Watches state, not
+ * call sites, so no delivery path can forget to escalate — and it is the ONLY way to catch the case the
+ * 2026-08-04 outage actually hit: messages that sit QUEUED and undelivered (parked behind a modal, never
+ * attempted, so never 'failed'). Returns channel rows that are EITHER
+ *   (a) status='failed' and never alarmed                         -> a hard drop, alarm once, OR
+ *   (b) status='queued', queued longer than staleSec, and either  -> a stall, alarm on a slow cadence
+ *       never alarmed or last alarmed more than realarmSec ago.
+ * 'delivered' rows are never returned. Ordered oldest-first.
+ */
+export function listOwnerAlarmable(staleSec: number, realarmSec: number): OwnerAlarmRow[] {
+  return getDb()
+    .prepare(
+      `SELECT id, agent_id, status, attempts, reply_channel, prompt,
+              (unixepoch() - created_at) AS age_sec,
+              (status='failed') AS dropped
+         FROM inbound_queue
+        WHERE source='channel'
+          AND (
+                (status='failed' AND owner_alarmed_at IS NULL)
+             OR (status='queued' AND created_at < (unixepoch() - ?)
+                 AND (owner_alarmed_at IS NULL OR owner_alarmed_at < (unixepoch() - ?)))
+              )
+        ORDER BY id ASC`
+    )
+    .all(staleSec, realarmSec)
+    .map((r) => {
+      const row = r as { dropped: number } & Omit<OwnerAlarmRow, "dropped">;
+      return { ...row, dropped: !!row.dropped };
+    }) as OwnerAlarmRow[];
+}
+
+/** Stamp that we have alarmed the owner about this row, so it isn't paged again every tick. */
+export function markOwnerAlarmed(id: number): void {
+  getDb().prepare(`UPDATE inbound_queue SET owner_alarmed_at=unixepoch() WHERE id=?`).run(id);
 }
 
 // ---- outbound (agent -> Slack) ----

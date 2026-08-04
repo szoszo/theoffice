@@ -8,6 +8,7 @@ import { startScheduler } from "./scheduler/index.js";
 import { startBus } from "./bus/index.js";
 import { startServer } from "./web/server.js";
 import { startAuthWatchdog } from "./web/auth-watchdog.js";
+import { startSessionHygiene } from "./session/modal-sweeper.js";
 import { reapStaleDelivering, reapStaleOutboundSending } from "./queue/index.js";
 import { log } from "./logger.js";
 
@@ -73,6 +74,13 @@ async function main(): Promise<void> {
   // are unrelated to the Claude credential), so it is the only thing that can still raise the alarm
   // when every agent has gone silent. Also self-heals stale panes when the credential is actually fine.
   stops.push(startAuthWatchdog(cfg));
+
+  // Phase 6b: session-hygiene sweeper. Dismisses the Claude usage-limit modal (which otherwise bricks a
+  // pane into 'unknown' and parks every queued message behind it, owner's included, until a human
+  // presses Enter — the 2026-08-04 outage) by selecting Stop-and-wait, and drops stale scheduler
+  // heartbeats so they don't sit ahead of live work. Like the auth watchdog, it works when an agent's
+  // own Claude session is the thing that is broken.
+  stops.push(startSessionHygiene(cfg));
 
   logger.info("boot complete");
 

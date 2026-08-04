@@ -93,6 +93,16 @@ export const MIGRATIONS: Migration[] = [
            ALTER TABLE outbound_queue_v5 RENAME TO outbound_queue;
            CREATE INDEX IF NOT EXISTS idx_outbound_status ON outbound_queue(status);`,
   },
+  {
+    version: 6,
+    name: "inbound_queue owner-alarm dedup",
+    // The owner-delivery watchdog (2026-08-04) alarms Szoszo when a source='channel' message is dropped
+    // (status=failed) OR sits queued+undelivered past a threshold — the queued case being the one the
+    // 2026-08-04 outage actually hit (messages parked behind a modal, never attempted, never failed).
+    // owner_alarmed_at records the last time we alarmed about a row so the watchdog fires once per drop
+    // and only re-alarms a still-stuck queued row on a slow cadence, instead of paging every tick.
+    sql: `ALTER TABLE inbound_queue ADD COLUMN owner_alarmed_at INTEGER;`,
+  },
 ];
 
 /** Highest known schema version (the baseline, or the max migration version). */

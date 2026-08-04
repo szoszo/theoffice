@@ -105,6 +105,95 @@ export function detectPaneState(pane: string): PaneState {
   return "idle";
 }
 
+// The Claude Code "you've hit your usage limit" modal. When an agent exhausts its plan limit mid-turn,
+// Claude Code halts the turn and replaces the whole footer with a blocking menu:
+//
+//     You've hit your session limit · resets 6:20am
+//     What do you want to do?
+//       ❯ 1. Stop and wait for limit to reset
+//         2. Upgrade your plan
+//       Enter to confirm · Esc to cancel
+//
+// That menu carries NO idle footer, so detectPaneState() returns 'unknown' and the deliverer's
+// readiness gate parks every queued message behind it — the owner's included. It NEVER self-clears,
+// even after the limit resets: it sits on the menu until someone presses Enter, so an agent that hits
+// its limit unattended goes deaf until a human intervenes (marveen + dwight + toby all frozen this way,
+// 2026-08-04). The session-hygiene sweeper dismisses it by selecting option 1 (Stop-and-wait, which
+// makes Claude Code auto-resume at reset); it must NEVER pick option 2 (Upgrade spends the owner's money).
+// The presence of the two menu labels only proves the usage-limit menu is ON SCREEN — NOT which option
+// the cursor is on. Enter confirms whatever is highlighted, so a detector that gates Enter on presence
+// alone will select Upgrade (a charge to the owner's card) any time the pane is captured with the
+// highlight on option 2 — a human arrowed down and walked away, a future Claude Code default change, a
+// mid-render frame, any variant we don't control. The highlight is the load-bearing bit, so it must be
+// verified, never assumed (Michael, bus 9274; Toby's required test).
+//
+// The highlight marker is `❯` immediately before the option, verified against the REAL 2026-08-04
+// captures (marveen, dwight, toby all rendered `❯ 1. Stop and wait for limit to reset`), not just the
+// test fixture. STOP_HIGHLIGHTED anchors `❯` to the Stop-and-wait line; UPGRADE_PRESENT confirms this
+// really is the usage-limit menu (that label never appears elsewhere).
+const USAGE_LIMIT_STOP_HIGHLIGHTED_RX = /❯\s*1\.\s*Stop and wait for limit to reset/;
+const USAGE_LIMIT_UPGRADE_PRESENT_RX = /Upgrade your plan/;
+// The menu + its footer occupy the last ~6 lines; 12 gives margin without reaching deep scrollback.
+const USAGE_LIMIT_TAIL_LINES = 12;
+
+function usageLimitTail(pane: string): string | null {
+  if (!pane) return null;
+  // The real modal has no idle footer; an idle/busy pane that merely QUOTES the modal text still shows
+  // its footer and is rejected here, so a quoted menu in a reply can never be mistaken for the live one.
+  if (detectPaneState(pane) !== "unknown") return null;
+  const lines = pane.split("\n");
+  return lines.slice(Math.max(0, lines.length - USAGE_LIMIT_TAIL_LINES)).join("\n");
+}
+
+/**
+ * True ONLY when the pane is on the usage-limit modal AND the highlight is provably on Stop-and-wait —
+ * i.e. the exact arrangement where sending Enter confirms option 1 and NOTHING else. This is the only
+ * state in which the sweeper may press Enter. Every other arrangement (highlight on Upgrade, no
+ * highlight, an unrecognised marker) returns false, so the caller falls through to leave-and-alarm
+ * rather than send a keystroke it cannot prove is safe. Whitelist, not blacklist: we recognise the one
+ * safe frame, we do not try to enumerate the dangerous ones.
+ */
+export function detectsUsageLimitModal(pane: string): boolean {
+  const tail = usageLimitTail(pane);
+  if (tail == null) return false;
+  return USAGE_LIMIT_STOP_HIGHLIGHTED_RX.test(tail) && USAGE_LIMIT_UPGRADE_PRESENT_RX.test(tail);
+}
+
+/**
+ * True when a usage-limit modal is on screen but NOT in the safe-to-dismiss arrangement (both labels
+ * present, but the highlight is not provably on Stop-and-wait). The sweeper uses this to LEAVE the pane
+ * untouched and surface it — never to act. Mutually exclusive with detectsUsageLimitModal by construction.
+ */
+export function detectsUnsafeUsageLimitModal(pane: string): boolean {
+  const tail = usageLimitTail(pane);
+  if (tail == null) return false;
+  // A usage-limit modal is present iff the Stop-and-wait LABEL and the Upgrade label both show.
+  const present = /Stop and wait for limit to reset/.test(tail) && USAGE_LIMIT_UPGRADE_PRESENT_RX.test(tail);
+  return present && !USAGE_LIMIT_STOP_HIGHLIGHTED_RX.test(tail);
+}
+
+// A permission / approval prompt. This is the class the sweeper must be STRUCTURALLY INCAPABLE of
+// clearing (Michael 9248/9253): dismissing one APPROVES an action — a delete, a push, a payment, a
+// deploy — blind, on the owner's box, with his credentials. So the sweeper only ever DETECTS + ALARMS
+// on these and leaves the pane exactly as it is; a human decides. The strings are Claude Code's own
+// approval-menu wording, which never appears in the usage-limit menu. Agents run
+// --dangerously-skip-permissions, so these are rare — but Claude Code still surfaces a gate for
+// operations it deems dangerous (a real one froze cfo on an `rm -f "$WORK"/*.pdf` on 2026-08-04), which
+// is exactly why one appearing must be surfaced loudly rather than left to sit silently.
+const PERMISSION_PROMPT_RX =
+  /No, and tell Claude what to do differently|Yes, and (?:don't|do not) ask again|Do you want to (?:proceed|make this edit|create|run|allow)/;
+
+/**
+ * True when the pane is blocked on a permission/approval prompt. Gated on detectPaneState==='unknown'
+ * (a live approval menu carries no idle footer) so an idle/busy pane that merely quotes the wording in a
+ * reply is not mistaken for a live gate. The sweeper must ALARM on this, never send a keystroke.
+ */
+export function detectsPermissionPrompt(pane: string): boolean {
+  if (!pane) return false;
+  if (detectPaneState(pane) !== "unknown") return false;
+  return PERMISSION_PROMPT_RX.test(pane);
+}
+
 /**
  * PROVABLY empty: the live input box is visible AND holds no text.
  *

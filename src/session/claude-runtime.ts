@@ -268,7 +268,14 @@ async function deliverClaude(cfg: EngineConfig, agent: AgentDef, item: QueuedIte
   } else if (res.reason === "wedged") {
     markFailed(item.id, "session wedged (thinking-block error)");
     logger.warn({ id: item.id, agent: item.agent_id }, "agent wedged — needs reset");
-  } else if (item.attempts >= MAX_DELIVERY_ATTEMPTS) {
+    // NB: owner (source='channel') escalation is NOT done here. It lives in ONE state-observer — the
+    // owner-delivery watchdog (startSessionHygiene) — so it fires no matter which path failed the row,
+    // AND catches the case this delivery path can't see: a message that never fails because it never
+    // gets attempted (parked queued behind a modal), which is exactly the 2026-08-04 outage.
+  } else if (item.attempts + 1 >= MAX_DELIVERY_ATTEMPTS) {
+    // +1: item.attempts is the PRE-markDelivering snapshot; this failing delivery already burned an
+    // attempt, so give up when THIS is the MAX-th try. Without the +1 a row failed on its 6th attempt
+    // against a max of 5 (the off-by-one Toby flagged).
     markFailed(item.id, res.reason ?? "unknown");
     logger.warn({ id: item.id, agent: item.agent_id, reason: res.reason }, "delivery failed (max attempts)");
   } else {

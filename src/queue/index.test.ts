@@ -6,6 +6,9 @@ import { openDb, closeDb, getDb } from "../db/index.js";
 import {
   enqueueInbound,
   listQueued,
+  reapStaleScheduler,
+  listOwnerAlarmable,
+  markOwnerAlarmed,
   markDelivering,
   markDelivered,
   requeue,
@@ -124,5 +127,108 @@ describe("outbound state-machine", () => {
     markOutboundSent(id); // row is now terminal 'sent'
     markOutboundFailed(id, "late throw"); // must be a NO-OP: cannot flip a sent row back to queued
     expect(orow(id).status).toBe("sent"); // stayed sent, not resurrected
+  });
+});
+
+// helper: backdate a row's created_at so staleness can be exercised deterministically
+const backdate = (id: number, secsAgo: number) =>
+  getDb().prepare(`UPDATE inbound_queue SET created_at=unixepoch()-? WHERE id=?`).run(secsAgo, id);
+
+describe("listQueued delivery-priority (owner channel first)", () => {
+  it("returns source='channel' ahead of older non-channel rows, FIFO within class", () => {
+    // Enqueue in an order that would put the owner message LAST under a flat id-ASC.
+    const sched1 = enqueueInbound({ agentId: "z", source: "scheduler", prompt: "heartbeat-1" })!;
+    const bus1 = enqueueInbound({ agentId: "z", source: "bus", prompt: "peer-1" })!;
+    const owner1 = enqueueInbound({ agentId: "z", source: "channel", prompt: "owner-first" })!;
+    const owner2 = enqueueInbound({ agentId: "z", source: "channel", prompt: "owner-second" })!;
+    const ids = listQueued("z").map((i) => i.id);
+    // both owner messages ahead of the two older non-channel rows...
+    expect(ids.indexOf(owner1)).toBeLessThan(ids.indexOf(sched1));
+    expect(ids.indexOf(owner1)).toBeLessThan(ids.indexOf(bus1));
+    expect(ids.indexOf(owner2)).toBeLessThan(ids.indexOf(sched1));
+    // ...and FIFO among themselves (owner1 enqueued before owner2), and among the rest (sched before bus)
+    expect(ids.indexOf(owner1)).toBeLessThan(ids.indexOf(owner2));
+    expect(ids.indexOf(sched1)).toBeLessThan(ids.indexOf(bus1));
+  });
+});
+
+describe("reapStaleScheduler", () => {
+  it("fails only stale queued scheduler rows; leaves fresh scheduler and non-scheduler alone", () => {
+    const staleSched = enqueueInbound({ agentId: "s", source: "scheduler", prompt: "moot briefing" })!;
+    const freshSched = enqueueInbound({ agentId: "s", source: "scheduler", prompt: "recent heartbeat" })!;
+    const staleOwner = enqueueInbound({ agentId: "s", source: "channel", prompt: "old owner msg" })!;
+    const staleBus = enqueueInbound({ agentId: "s", source: "bus", prompt: "old peer msg" })!;
+    backdate(staleSched, 3 * 60 * 60); // 3h old
+    backdate(staleOwner, 3 * 60 * 60);
+    backdate(staleBus, 3 * 60 * 60);
+    // freshSched left at ~now
+    const dropped = reapStaleScheduler(2 * 60 * 60); // 2h threshold
+    expect(dropped).toBe(1); // only the stale scheduler row
+    expect(row(staleSched).status).toBe("failed");
+    expect(row(freshSched).status).toBe("queued"); // too young
+    expect(row(staleOwner).status).toBe("queued"); // owner never age-dropped
+    expect(row(staleBus).status).toBe("queued"); // bus never age-dropped
+  });
+
+  it("maxAgeSec <= 0 disables the sweep entirely (no rows touched)", () => {
+    const s = enqueueInbound({ agentId: "s2", source: "scheduler", prompt: "old" })!;
+    backdate(s, 10 * 60 * 60);
+    expect(reapStaleScheduler(0)).toBe(0);
+    expect(reapStaleScheduler(-1)).toBe(0);
+    expect(row(s).status).toBe("queued");
+  });
+});
+
+const setAlarmedAgo = (id: number, secsAgo: number) =>
+  getDb().prepare(`UPDATE inbound_queue SET owner_alarmed_at=unixepoch()-? WHERE id=?`).run(secsAgo, id);
+const ids = (rows: { id: number }[]) => rows.map((r) => r.id);
+
+describe("listOwnerAlarmable — an owner message must never go unheard (dropped OR merely stuck)", () => {
+  const STALE = 15 * 60; // 15 min
+  const REALARM = 30 * 60; // 30 min
+
+  it("returns a DROPPED (failed) channel row that was never alarmed, once", () => {
+    const id = enqueueInbound({ agentId: "d", source: "channel", prompt: "dropped owner msg" })!;
+    markFailed(id, "dirty-pane");
+    const got = listOwnerAlarmable(STALE, REALARM).find((r) => r.id === id)!;
+    expect(got).toBeTruthy();
+    expect(got.dropped).toBe(true);
+    // once alarmed, it drops out
+    markOwnerAlarmed(id);
+    expect(ids(listOwnerAlarmable(STALE, REALARM))).not.toContain(id);
+  });
+
+  it("returns a QUEUED channel row older than staleSec — THE 2026-08-04 CASE (never failed, just stuck)", () => {
+    const stuck = enqueueInbound({ agentId: "q", source: "channel", prompt: "queued behind a modal" })!;
+    const fresh = enqueueInbound({ agentId: "q", source: "channel", prompt: "just arrived" })!;
+    backdate(stuck, STALE + 60); // 16 min old, still status=queued
+    const got = listOwnerAlarmable(STALE, REALARM);
+    expect(ids(got)).toContain(stuck);
+    expect(got.find((r) => r.id === stuck)!.dropped).toBe(false); // a stall, not a drop
+    expect(ids(got)).not.toContain(fresh); // too young
+  });
+
+  it("a stuck queued row alarmed recently is NOT re-alarmed until realarmSec passes", () => {
+    const id = enqueueInbound({ agentId: "r", source: "channel", prompt: "still stuck" })!;
+    backdate(id, STALE + 600);
+    setAlarmedAgo(id, REALARM - 60); // alarmed 29 min ago (< 30 min realarm)
+    expect(ids(listOwnerAlarmable(STALE, REALARM))).not.toContain(id);
+    setAlarmedAgo(id, REALARM + 60); // now 31 min ago -> due again
+    expect(ids(listOwnerAlarmable(STALE, REALARM))).toContain(id);
+  });
+
+  it("never returns non-channel rows, delivered rows, or fresh queued rows", () => {
+    const sched = enqueueInbound({ agentId: "n", source: "scheduler", prompt: "hb" })!;
+    markFailed(sched, "whatever"); // failed but NOT channel
+    const bus = enqueueInbound({ agentId: "n", source: "bus", prompt: "peer" })!;
+    backdate(bus, STALE + 600); // old but NOT channel
+    const delivered = enqueueInbound({ agentId: "n", source: "channel", prompt: "handled" })!;
+    markDelivering(delivered);
+    markDelivered(delivered);
+    backdate(delivered, STALE + 600);
+    const got = ids(listOwnerAlarmable(STALE, REALARM));
+    expect(got).not.toContain(sched);
+    expect(got).not.toContain(bus);
+    expect(got).not.toContain(delivered);
   });
 });

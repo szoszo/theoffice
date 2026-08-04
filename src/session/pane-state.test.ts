@@ -6,6 +6,9 @@ import {
   detectPaneState,
   isReadyForPrompt,
   detectsThinkingBlockError,
+  detectsUsageLimitModal,
+  detectsUnsafeUsageLimitModal,
+  detectsPermissionPrompt,
   shouldRetrySubmit,
   decideSubmitFollowup,
   liveInputBox,
@@ -308,4 +311,126 @@ describe("stripPaneStyling — the plain view must survive the -e capture", () =
     expect(detectPaneState(plainIdleWith("❯ some real residue"))).toBe("typing"); // ASCII space: matches
     expect(inputBoxProvablyEmpty(plainIdleWith("❯\xa0some real residue"))).toBe(false); // caught here
   });
+});
+
+describe("detectsUsageLimitModal — dismissable ONLY when Stop-and-wait is highlighted", () => {
+  // Real 2026-08-04 shape (marveen/dwight/toby): cursor `❯` on option 1.
+  const HIGHLIGHT_ON_STOP = pane(
+    "  ✻ Cooked for 1m 19s",
+    "  You've hit your session limit · resets 6:20am",
+    "   What do you want to do?",
+    "   ❯ 1. Stop and wait for limit to reset",
+    "     2. Upgrade your plan",
+    "   Enter to confirm · Esc to cancel",
+  );
+  // THE DANGEROUS ONE (Toby's required test, Michael 9274): cursor `❯` on Upgrade. Enter here would
+  // spend the owner's money — the detector MUST refuse so the sweeper never presses it.
+  const HIGHLIGHT_ON_UPGRADE = pane(
+    "   What do you want to do?",
+    "     1. Stop and wait for limit to reset",
+    "   ❯ 2. Upgrade your plan",
+    "   Enter to confirm · Esc to cancel",
+  );
+  // No highlight at all (mid-render / unrecognised marker): also refuse.
+  const NO_HIGHLIGHT = pane(
+    "   What do you want to do?",
+    "     1. Stop and wait for limit to reset",
+    "     2. Upgrade your plan",
+    "   Enter to confirm · Esc to cancel",
+  );
+
+  it("highlight on Stop-and-wait -> dismissable (Enter provably selects option 1)", () => {
+    expect(detectPaneState(HIGHLIGHT_ON_STOP)).toBe("unknown");
+    expect(detectsUsageLimitModal(HIGHLIGHT_ON_STOP)).toBe(true);
+    expect(detectsUnsafeUsageLimitModal(HIGHLIGHT_ON_STOP)).toBe(false);
+  });
+
+  it("highlight on UPGRADE -> NOT dismissable (never spend the owner's money), flagged unsafe", () => {
+    expect(detectsUsageLimitModal(HIGHLIGHT_ON_UPGRADE)).toBe(false); // the money-safety invariant
+    expect(detectsUnsafeUsageLimitModal(HIGHLIGHT_ON_UPGRADE)).toBe(true); // sweeper leaves + surfaces it
+  });
+
+  it("no highlight on either option -> NOT dismissable, flagged unsafe", () => {
+    expect(detectsUsageLimitModal(NO_HIGHLIGHT)).toBe(false);
+    expect(detectsUnsafeUsageLimitModal(NO_HIGHLIGHT)).toBe(true);
+  });
+
+  it("dismissable and unsafe are mutually exclusive across all four fixtures", () => {
+    for (const p of [HIGHLIGHT_ON_STOP, HIGHLIGHT_ON_UPGRADE, NO_HIGHLIGHT]) {
+      expect(detectsUsageLimitModal(p) && detectsUnsafeUsageLimitModal(p)).toBe(false);
+    }
+  });
+
+  it("does NOT fire on an idle pane that merely QUOTES the modal text in a reply", () => {
+    const quoted = pane(
+      "● The limit menu offered: ❯ 1. Stop and wait for limit to reset / 2. Upgrade your plan",
+      SEP,
+      "❯ ",
+      SEP,
+      FOOTER,
+    );
+    expect(detectPaneState(quoted)).toBe("idle"); // has the real footer -> not 'unknown'
+    expect(detectsUsageLimitModal(quoted)).toBe(false);
+    expect(detectsUnsafeUsageLimitModal(quoted)).toBe(false);
+  });
+
+  it("does NOT fire on a busy pane quoting the modal", () => {
+    const busy = pane(
+      "  Thinking… (12s · ↓ 1.2k tokens) ❯ 1. Stop and wait for limit to reset / 2. Upgrade your plan",
+      "  esc to interrupt",
+    );
+    expect(detectsUsageLimitModal(busy)).toBe(false);
+    expect(detectsUnsafeUsageLimitModal(busy)).toBe(false);
+  });
+
+  it("empty / blank pane is not the modal", () => {
+    expect(detectsUsageLimitModal("")).toBe(false);
+    expect(detectsUnsafeUsageLimitModal("")).toBe(false);
+  });
+});
+
+describe("detectsPermissionPrompt — DETECT (to alarm), the sweeper must NEVER dismiss these", () => {
+  const PERM_EDIT = pane(
+    "  Do you want to make this edit to config.ts?",
+    "   ❯ 1. Yes",
+    "     2. Yes, and don't ask again this session",
+    "     3. No, and tell Claude what to do differently (esc)",
+  );
+  const PERM_BASH = pane(
+    "  Do you want to run this command?",
+    "     rm -rf /opt/claude/theoffice/tenant/store",
+    "   ❯ 1. Yes",
+    "     2. No, and tell Claude what to do differently (esc)",
+  );
+
+  it("fires on a live edit/bash approval gate (no idle footer -> unknown + approval wording)", () => {
+    expect(detectPaneState(PERM_EDIT)).toBe("unknown");
+    expect(detectsPermissionPrompt(PERM_EDIT)).toBe(true);
+    expect(detectsPermissionPrompt(PERM_BASH)).toBe(true);
+    // and it is NOT confused with the usage-limit modal -> never gets a keystroke
+    expect(detectsUsageLimitModal(PERM_EDIT)).toBe(false);
+    expect(detectsUsageLimitModal(PERM_BASH)).toBe(false);
+  });
+
+  it("does NOT fire on an idle/busy pane that quotes the approval wording in a reply", () => {
+    const quoted = pane("● I asked: Do you want to proceed? and you said yes", SEP, "❯ ", SEP, FOOTER);
+    expect(detectPaneState(quoted)).toBe("idle");
+    expect(detectsPermissionPrompt(quoted)).toBe(false);
+  });
+});
+
+describe("usage-limit sweeper acts on NOTHING but the positive limit-modal signature (point 3)", () => {
+  // busy / typing / normal-idle / unrecognised-modal -> neither dismissable nor flagged unsafe
+  const BUSY = pane("✻ Thinking… (12s · ↓ 2.6k tokens · esc to interrupt)", SEP, "❯ ", SEP, FOOTER);
+  const TYPING = pane(SEP, "❯ some half-typed thing", SEP, FOOTER);
+  const IDLE = pane("● reply", SEP, "❯ ", SEP, FOOTER);
+  const UNRECOGNISED_MODAL = pane("  Some future modal we've never seen", "   ❯ 1. Do a thing", "     2. Do another", "   Enter to confirm");
+
+  for (const [name, p] of [["busy", BUSY], ["typing", TYPING], ["idle", IDLE], ["unrecognised modal", UNRECOGNISED_MODAL]] as const) {
+    it(`${name}: not dismissable, not flagged unsafe, not a permission prompt`, () => {
+      expect(detectsUsageLimitModal(p)).toBe(false);
+      expect(detectsUnsafeUsageLimitModal(p)).toBe(false);
+      expect(detectsPermissionPrompt(p)).toBe(false);
+    });
+  }
 });
