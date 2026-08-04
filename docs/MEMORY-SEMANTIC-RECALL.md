@@ -14,7 +14,7 @@ That is the whole point of the feature, so it is worth the ten minutes of setup.
 
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh   # or your platform's package
-ollama pull nomic-embed-text                    # 768-dim, ~270 MB
+ollama pull bge-m3                              # 1024-dim, ~1.2 GB, multilingual
 npm run memory:status                           # should now report OK
 ```
 
@@ -32,12 +32,30 @@ or a CI step and hear about it without watching.
 | Env var      | Default                  | Notes                                                        |
 | ------------ | ------------------------ | ------------------------------------------------------------ |
 | `OLLAMA_URL` | `http://127.0.0.1:11434` | Point at a remote or shared Ollama if you have one.           |
-| `EMBED_MODEL`| `nomic-embed-text`       | If you change this, also set `EMBED_DIM` and re-run backfill. |
-| `EMBED_DIM`  | `768`                    | Must match the model's real output length.                    |
+| `EMBED_MODEL`| `bge-m3`                 | If you change this, also set `EMBED_DIM` and re-run backfill. |
+| `EMBED_DIM`  | `1024`                   | Must match the model's real output length.                    |
 
 Changing the model **invalidates existing vectors**: they are compared by cosine similarity, and
 vectors from two different models are not comparable. Vectors of the wrong length are rejected on
 write and re-attempted by the backfill, so a model change is recoverable — just re-run backfill.
+
+## Choosing a model
+
+The default is multilingual because the store it was measured on is. If your memories and questions
+are all in English, `nomic-embed-text` (with `EMBED_DIM=768`) is smaller, ~4x faster, and scored the
+same on English questions — set both env vars and re-run the backfill.
+
+Measured on 12 real questions against 250 real memories, half the questions in a second language:
+
+| model              | recall@1 | recall@5 | non-English recall@1 |
+| ------------------ | -------- | -------- | -------------------- |
+| `nomic-embed-text` | 3/12     | 8/12     | **0/6**              |
+| `bge-m3`           | 6/12     | 11/12    | 3/6                  |
+
+The 0/6 is why the default changed. Correct memories were ranking 53rd, 81st, 192nd and 249th when
+the question was asked in the other language — retrievable in principle, invisible in practice. Note
+that *coverage was 100% the whole time*: every row had a vector. Coverage counts rows with a vector,
+not vectors that find anything, so measure retrieval separately and on your own data.
 
 ## Design decisions worth knowing before you change anything
 

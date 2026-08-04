@@ -13,17 +13,37 @@
  */
 
 export const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://127.0.0.1:11434";
-export const EMBED_MODEL = process.env.EMBED_MODEL ?? "nomic-embed-text";
+/**
+ * Multilingual by default, chosen by measurement on a real bilingual store rather than by reputation
+ * (2026-08-03, prompted by the parallel fork having done the same experiment and written it down).
+ *
+ * nomic-embed-text is excellent English-only and was the previous default. On 12 real questions
+ * against 250 real memories it scored recall@1 3/12 and — the finding that mattered — HUNGARIAN
+ * 0/6, ranking correct memories 53rd, 81st, 192nd and 249th. A memory you cannot retrieve in the
+ * language you ask in is not stored as far as the owner is concerned, and nothing reported this:
+ * vector COVERAGE was 100%, because coverage counts rows with a vector, not vectors that find
+ * anything.
+ *
+ * bge-m3 on the identical set: recall@1 6/12, recall@5 11/12, Hungarian 3/6 with five of six in the
+ * top two. recall@5 is the number to watch — agents are told to search with a generous limit and
+ * read the results, so "in the top five" is what retrieval actually has to deliver.
+ *
+ * Cost: ~438ms for a query and ~1.4s per document warm, against ~108ms/~399ms for nomic. Queries
+ * stay well inside RECALL_EMBED_TIMEOUT_MS; documents are embedded in the background or by backfill,
+ * where seconds do not matter. Set EMBED_MODEL=nomic-embed-text (with EMBED_DIM=768) to go back —
+ * a sensible choice for an English-only store on a small box.
+ */
+export const EMBED_MODEL = process.env.EMBED_MODEL ?? "bge-m3";
 /** Matches the old ClaudeClaw generator, so backfilled and live vectors stay comparable. */
 const MAX_INPUT_CHARS = 2000;
 /**
- * nomic-embed-text returns 768 dimensions. A vector of any other length is REJECTED rather than
+ * bge-m3 returns 1024 dimensions. A vector of any other length is REJECTED rather than
  * stored, because a stored wrong-length vector is the worst of both worlds: cosine reads 0 against
  * every real vector (semantically dead), yet the row counts as "covered" and the backfill, which
  * selects WHERE embedding IS NULL, never retries it. Leaving the row NULL is honest and self-healing.
  * Found by Toby's adversarial pass on fc077ea, 2026-08-03, before it could bite.
  */
-export const EXPECTED_DIM = Number(process.env.EMBED_DIM ?? 768);
+export const EXPECTED_DIM = Number(process.env.EMBED_DIM ?? 1024);
 /** Ollama is local; a hung request must not stall a memory save or a recall. */
 const TIMEOUT_MS = 20_000;
 

@@ -82,6 +82,10 @@ async function main(): Promise<void> {
     if (cmd === "backfill") {
       const batch = argOf("--batch") ?? 200;
       const max = argOf("--max") ?? Number.POSITIVE_INFINITY;
+      // Pause between batches. A model swap re-embeds the WHOLE store, and on a small box the agents
+      // are sharing those cores — a backfill that starves live delivery to finish sooner is a bad
+      // trade, because nothing is waiting on it.
+      const pauseMs = argOf("--pause") ?? 0;
       let written = 0;
       let attempted = 0;
       // Loop until a batch comes back empty (drained) or produces nothing (embedder down —
@@ -97,6 +101,7 @@ async function main(): Promise<void> {
         }
         console.log(`  ${written} embedded so far...`);
         if (attempted >= max) break;
+        if (pauseMs > 0) await new Promise((r) => setTimeout(r, pauseMs));
       }
       console.log(`\nbackfill done: ${written} embedded (${attempted} attempted)`);
       console.log(formatStatus(countEmbeddings(), EMBED_MODEL, OLLAMA_URL));
@@ -104,7 +109,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    console.error(`unknown command: ${cmd}\nusage: memory-cli [status|backfill] [--batch N] [--max N]`);
+    console.error(`unknown command: ${cmd}\nusage: memory-cli [status|backfill] [--batch N] [--max N] [--pause MS]`);
     process.exitCode = 2;
   } finally {
     closeDb();

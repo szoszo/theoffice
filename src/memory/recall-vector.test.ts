@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi, afterEach } from "vitest";
+import { EXPECTED_DIM } from "./embeddings.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,7 +27,7 @@ let dir: string;
 // Orthogonal by construction: each seed lights a distinct 96-wide band, so cos(V(a),V(b)) is 1 when
 // a===b and 0 otherwise. A smooth function like Math.sin(seed + i*0.001) looks different but is highly
 // correlated across seeds, which silently makes a discrimination test pass for the wrong reason.
-const V = (seed: number) => Array.from({ length: 768 }, (_, i) => (Math.floor(i / 96) === seed % 8 ? 1 : 0));
+const V = (seed: number) => Array.from({ length: EXPECTED_DIM }, (_, i) => (Math.floor(i / (EXPECTED_DIM / 8)) === seed % 8 ? 1 : 0));
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "office-recallvec-"));

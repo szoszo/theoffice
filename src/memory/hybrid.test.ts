@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi, afterEach } from "vitest";
+import { EXPECTED_DIM } from "./embeddings.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,7 +15,7 @@ import { encodeEmbedding } from "./embeddings.js";
  * so the automatic slice understood meaning while the deliberate search did not. Same half-done shape.
  */
 let dir: string;
-const V = (s: number) => Array.from({ length: 768 }, (_, i) => (Math.floor(i / 96) === s % 8 ? 1 : 0));
+const V = (s: number) => Array.from({ length: EXPECTED_DIM }, (_, i) => (Math.floor(i / (EXPECTED_DIM / 8)) === s % 8 ? 1 : 0));
 const noEmbedder = () => vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("no embedder"); }));
 
 beforeAll(() => {

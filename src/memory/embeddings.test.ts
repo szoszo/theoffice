@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { cosineSimilarity, encodeEmbedding, decodeEmbedding, generateEmbedding } from "./embeddings.js";
+import { cosineSimilarity, encodeEmbedding, decodeEmbedding, generateEmbedding, EXPECTED_DIM } from "./embeddings.js";
 
 /**
  * Memory vectors, added 2026-08-03.
@@ -65,7 +65,7 @@ describe("encode / decode", () => {
 
 describe("generateEmbedding — degrades, never throws", () => {
   it("returns the vector Ollama gives back", async () => {
-    const v = Array.from({ length: 768 }, (_, i) => i / 768);
+    const v = Array.from({ length: EXPECTED_DIM }, (_, i) => i / EXPECTED_DIM);
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ embedding: v }) })));
     expect(await generateEmbedding("hello")).toEqual(v);
   });
@@ -94,7 +94,7 @@ describe("generateEmbedding — degrades, never throws", () => {
 
   it("REJECTS a wrong-dimension vector instead of banking a dead one (Toby, 2026-08-03)", async () => {
     // The nastiest failure this module can have. A half-loaded or momentarily-wrong Ollama model
-    // returns a short vector; stored, it reads cosine 0 against every real 768-d vector, so it is
+    // returns a short vector; stored, it reads cosine 0 against every real full-length vector, so it is
     // SEMANTICALLY DEAD. Worse, it is not null, so countEmbeddings scores the row as covered and the
     // backfill (WHERE embedding IS NULL) never retries it. A transient glitch would permanently poison
     // rows while the very counter built to catch silent gaps reported them done. Rejecting keeps the
@@ -105,13 +105,13 @@ describe("generateEmbedding — degrades, never throws", () => {
     expect(await generateEmbedding("off-by-one dimension")).toBeNull();
   });
 
-  it("accepts the expected 768 dimensions", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ embedding: Array(768).fill(0.1) }) })));
-    expect(await generateEmbedding("good")).toHaveLength(768);
+  it("accepts the expected number of dimensions", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ embedding: Array(EXPECTED_DIM).fill(0.1) }) })));
+    expect(await generateEmbedding("good")).toHaveLength(EXPECTED_DIM);
   });
 
   it("truncates very long content before sending", async () => {
-    const f = vi.fn(async () => ({ ok: true, json: async () => ({ embedding: Array(768).fill(0.1) }) }));
+    const f = vi.fn(async () => ({ ok: true, json: async () => ({ embedding: Array(EXPECTED_DIM).fill(0.1) }) }));
     vi.stubGlobal("fetch", f);
     await generateEmbedding("x".repeat(9000));
     const body = JSON.parse((f.mock.calls[0]![1] as { body: string }).body);

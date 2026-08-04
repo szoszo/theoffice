@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi, afterEach } from "vitest";
+import { EXPECTED_DIM } from "./embeddings.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,10 +28,10 @@ const embeddingOf = (id: number) =>
 
 describe("attachEmbedding", () => {
   it("writes the vector onto the row", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ embedding: Array(768).fill(0.5) }) })));
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ embedding: Array(EXPECTED_DIM).fill(0.5) }) })));
     const id = saveMemory({ agentId: "a", content: "the flat on Baker Street" });
     expect(await attachEmbedding(id, "the flat on Baker Street")).toBe(true);
-    expect(JSON.parse(embeddingOf(id)!)).toHaveLength(768);
+    expect(JSON.parse(embeddingOf(id)!)).toHaveLength(EXPECTED_DIM);
   });
 
   it("Ollama down -> returns false and LEAVES THE MEMORY INTACT, unvectorized", async () => {
@@ -78,7 +79,7 @@ describe("attachEmbedding reports what actually happened", () => {
   it("a row that does not exist returns false, not a false success", async () => {
     // Cosmetic but it is a truth claim: returning true for a zero-row UPDATE would let a caller
     // believe a vector landed when nothing was written.
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ embedding: Array(768).fill(0.2) }) })));
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ embedding: Array(EXPECTED_DIM).fill(0.2) }) })));
     expect(await attachEmbedding(999_999, "nonexistent row")).toBe(false);
   });
 });
