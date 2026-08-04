@@ -418,11 +418,20 @@ const VIEWS = {
     const dis = s.filter((x) => !x.enabled).sort(byTime);
     const row = (x, on) => {
       const c = colorFor(x.agent);
-      return `<div class="sched">
+      return `<div class="sched" onclick="this.classList.toggle('open')" title="Tap to see the full prompt">
         <div class="coin" style="background:${c}">${esc(initialOf(nm(x.agent)))}</div>
         <div class="sb"><div class="sn">${esc(x.name)}</div><div class="sm">${esc(nm(x.agent))} · ${esc(cronHuman(x.schedule))}</div></div>
         <div class="next"><span class="ml">next run</span><span class="nv">${on ? esc(nextRunLabel(x.schedule)) : "—"}</span></div>
         ${on ? `<span class="onpill"><span class="dot"></span>on</span>` : `<span class="offpill">off</span>`}
+        <div class="schedmore">
+          <div class="smeta">
+            <span>${esc(x.type || "task")}</span>
+            <span>${esc(nm(x.agent))}</span>
+            <span class="mono">${esc(x.schedule)}</span>
+            <span>${on ? "enabled" : "disabled"}</span>
+          </div>
+          <pre class="sprompt">${esc(x.prompt || "(no prompt stored for this task)")}</pre>
+        </div>
       </div>`;
     };
     return `<div class="sectlabel">Enabled — ${en.length}</div>${en.map((x) => row(x, true)).join("") || `<div class="empty">none</div>`}
