@@ -56,6 +56,34 @@ describe("saveMemory never blocks on the embedder", () => {
   });
 });
 
+describe("live embed-on-save is opt-in (default OFF) — a save never wakes bge-m3 (2026-08-04)", () => {
+  // On the shared box a synchronous embed on EVERY save resets OLLAMA_KEEP_ALIVE, so the 1.1G model
+  // never unloads (it stayed resident ~permanently). Decoupled: with the flag off a save writes no
+  // vector and never calls the embedder; the daily backfill (office-embed-backfill.timer) vectorizes
+  // at 04:00 while the model is loaded only for that window. OFFICE_EMBED_ON_SAVE=1 restores it.
+  const flush = () => new Promise<void>((r) => setImmediate(r));
+  afterEach(() => { delete process.env.OFFICE_EMBED_ON_SAVE; });
+
+  it("flag OFF (default): saveMemory does NOT call the embedder, and the row lands NULL", async () => {
+    delete process.env.OFFICE_EMBED_ON_SAVE;
+    const fetchSpy = vi.fn(async () => ({ ok: true, json: async () => ({ embedding: Array(EXPECTED_DIM).fill(0.5) }) }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const id = saveMemory({ agentId: "a", content: "no live embed when the flag is off" });
+    await flush();
+    expect(fetchSpy).not.toHaveBeenCalled(); // the model was never woken
+    expect(embeddingOf(id)).toBeNull();      // the vector waits for the daily backfill; the memory is intact
+  });
+
+  it("flag ON: saveMemory triggers the embedder — reversible via OFFICE_EMBED_ON_SAVE=1", async () => {
+    process.env.OFFICE_EMBED_ON_SAVE = "1";
+    const fetchSpy = vi.fn(async () => ({ ok: true, json: async () => ({ embedding: Array(EXPECTED_DIM).fill(0.5) }) }));
+    vi.stubGlobal("fetch", fetchSpy);
+    saveMemory({ agentId: "a", content: "live embed when the flag is on" });
+    await flush();
+    expect(fetchSpy).toHaveBeenCalled(); // opt-in restores the old synchronous-embed behavior
+  });
+});
+
 describe("countEmbeddings — the observability that was missing", () => {
   it("reports total vs embedded so the gap can never go unnoticed again", async () => {
     const c = countEmbeddings();
@@ -72,6 +100,25 @@ describe("countEmbeddings — the observability that was missing", () => {
     const c = countEmbeddings();
     expect(c.wrongDim).toBeGreaterThanOrEqual(1);
     expect(c.usable).toBe(c.embedded - c.wrongDim);
+  });
+
+  it("an un-embeddable memory (empty content+keywords) is counted separately, NOT as a coverage gap", () => {
+    // Empty embeddable text can never get a vector; if it counted as missing, coverage would read
+    // degraded forever and the backfill-success marker would never stamp. It is carved out of the
+    // coverage denominator (usable === total - unembeddable) and surfaced as its own number.
+    const before = countEmbeddings().unembeddable;
+    saveMemory({ agentId: "empty", content: "   " }); // whitespace content, no keywords -> un-embeddable, stays NULL
+    expect(countEmbeddings().unembeddable).toBe(before + 1);
+    // (coverageVerdict's carve-out of unembeddable from the denominator is unit-tested in embed-cli.test.ts)
+  });
+
+  it("content empty but keywords PRESENT -> EMBEDDABLE, NOT un-embeddable (over-exclusion guard, Michael 9663)", () => {
+    // The exact edge a naive content-only clause would silently break: keywords alone make the row
+    // embeddable (embeddableText = `${content}\n${keywords}`), so it MUST stay in the coverage denominator,
+    // not be dropped. Pins the rule as BOTH-empty, never content-only.
+    const before = countEmbeddings().unembeddable;
+    saveMemory({ agentId: "kw", content: "   ", keywords: "a real searchable keyword" });
+    expect(countEmbeddings().unembeddable).toBe(before); // did NOT increment — keywords keep it embeddable
   });
 });
 

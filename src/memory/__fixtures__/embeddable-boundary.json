@@ -1,0 +1,11 @@
+{
+  "_comment": "SHARED cross-language fixture pinning the un-embeddable emptiness rule. Consumed by BOTH src/memory/emptiness-boundary.test.ts (the TS countEmbeddings rule) AND tenant/store/watchd-checks/test_emptiness_boundary.py (the .py UNEMBEDDABLE_SQL rule). embeddable=true => in the alarm's age gate + counted against coverage; embeddable=false => un-embeddable, excluded from both. A memory is embeddable iff content OR keywords is non-empty (mirrors store.ts embeddableText). Rows 1-2 (keywords=null) are MANDATORY: they catch the most likely drift, one side COALESCE-ing null keywords and the other not. Edit this file when the rule changes, and BOTH tests must still pass.",
+  "rows": [
+    { "content": "hi",  "keywords": null,  "embeddable": true  },
+    { "content": "",    "keywords": null,  "embeddable": false },
+    { "content": "",    "keywords": "tag", "embeddable": true  },
+    { "content": "hi",  "keywords": "",    "embeddable": true  },
+    { "content": "",    "keywords": "",    "embeddable": false },
+    { "content": "   ", "keywords": "   ", "embeddable": false }
+  ]
+}

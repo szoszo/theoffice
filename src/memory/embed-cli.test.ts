@@ -11,7 +11,7 @@ import { coverageVerdict, formatStatus, exitCodeFor } from "./embed-cli.js";
  */
 
 const counts = (o: Partial<ReturnType<typeof base>> = {}) => ({ ...base(), ...o });
-const base = () => ({ total: 100, embedded: 100, missing: 0, wrongDim: 0, usable: 100 });
+const base = () => ({ total: 100, embedded: 100, missing: 0, wrongDim: 0, usable: 100, unembeddable: 0 });
 
 describe("coverageVerdict", () => {
   it("full coverage -> ok", () => {
@@ -34,6 +34,21 @@ describe("coverageVerdict", () => {
 
   it("an empty store is ok, not 'off' — there is nothing to fail to embed", () => {
     expect(coverageVerdict(counts({ total: 0, embedded: 0, missing: 0, usable: 0 }))).toBe("ok");
+  });
+
+  it("an UN-EMBEDDABLE row is out of the denominator -> ok, not permanently degraded (2026-08-04)", () => {
+    // A memory with empty content+keywords can never get a vector; counting it as a gap would read as
+    // degraded forever AND stop the backfill-success marker ever stamping. RED-FIRST: old verdict was
+    // usable===total (100===101 -> degraded); the fix is usable===total-unembeddable (100===100 -> ok).
+    expect(coverageVerdict(counts({ total: 101, embedded: 100, missing: 1, usable: 100, unembeddable: 1 }))).toBe("ok");
+    // exit 0 is exactly what makes embed-cli stamp the backfill-success marker, so an un-embeddable row
+    // present does NOT block the stamp (which would otherwise false-fire the health check's (b)). Criterion 4.
+    expect(exitCodeFor(coverageVerdict(counts({ total: 101, embedded: 100, missing: 1, usable: 100, unembeddable: 1 })))).toBe(0);
+  });
+
+  it("a REAL missing vector still degrades even with the un-embeddable carve-out", () => {
+    // Same shape but the missing row IS embeddable (unembeddable:0) — must NOT be masked as ok.
+    expect(coverageVerdict(counts({ total: 101, embedded: 100, missing: 1, usable: 100, unembeddable: 0 }))).toBe("degraded");
   });
 });
 

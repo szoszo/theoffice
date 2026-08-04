@@ -13,10 +13,27 @@
  *   tsx src/memory/embed-cli.ts status
  *   tsx src/memory/embed-cli.ts backfill [--batch 200] [--max 100000]
  */
+import { writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { loadConfig } from "../config.js";
 import { openDb, closeDb } from "../db/index.js";
 import { countEmbeddings, backfillEmbeddings } from "./store.js";
 import { EMBED_MODEL, OLLAMA_URL } from "./embeddings.js";
+
+/**
+ * Stamp a durable "last successful backfill" marker next to the DB. The memory-embedding health check
+ * (watchd-checks/memory_embedding_health.py) ages this to alarm when the daily backfill stops running,
+ * and treats a MISSING marker as unknown (never stale), so this is the single source that must be
+ * written on every fully-successful run — timer OR manual. Best-effort: a marker write must never fail
+ * a backfill that actually embedded rows.
+ */
+function stampBackfillSuccess(dbFile: string): void {
+  try {
+    writeFileSync(join(dirname(dbFile), ".last-backfill-ok"), String(Math.floor(Date.now() / 1000)));
+  } catch {
+    /* best-effort — the coverage the run achieved is what matters, not the marker */
+  }
+}
 
 type Counts = ReturnType<typeof countEmbeddings>;
 export type Verdict = "ok" | "degraded" | "off";
@@ -27,7 +44,10 @@ export type Verdict = "ok" | "degraded" | "off";
  * because there is nothing there to have failed.
  */
 export function coverageVerdict(c: Counts): Verdict {
-  if (c.total === 0 || c.usable === c.total) return "ok";
+  // "ok" when every EMBEDDABLE row is usable — rows that can never embed (empty content+keywords) are
+  // out of the denominator, so one empty memory can't read as permanently degraded (which would also
+  // stop the backfill-success marker from ever stamping). total===0 stays ok (nothing to cover).
+  if (c.total === 0 || c.usable === c.total - c.unembeddable) return "ok";
   if (c.usable === 0) return "off";
   return "degraded";
 }
@@ -45,6 +65,7 @@ export function formatStatus(c: Counts, model: string, url: string): string {
     `  embedder: ${model} via ${url}`,
     `  missing vector: ${c.missing}`,
     `  wrong-dimension (stored but semantically dead): ${c.wrongDim}`,
+    `  un-embeddable (empty content+keywords, can never embed — excluded from coverage): ${c.unembeddable}`,
   ];
   if (verdict !== "ok") {
     lines.push(
@@ -103,9 +124,14 @@ async function main(): Promise<void> {
         if (attempted >= max) break;
         if (pauseMs > 0) await new Promise((r) => setTimeout(r, pauseMs));
       }
+      const finalCounts = countEmbeddings();
+      const verdict = coverageVerdict(finalCounts);
       console.log(`\nbackfill done: ${written} embedded (${attempted} attempted)`);
-      console.log(formatStatus(countEmbeddings(), EMBED_MODEL, OLLAMA_URL));
-      process.exitCode = exitCodeFor(coverageVerdict(countEmbeddings()));
+      console.log(formatStatus(finalCounts, EMBED_MODEL, OLLAMA_URL));
+      // Full coverage == a successful daily run: stamp the marker the health check ages. Only on "ok",
+      // so a partial run (ollama down mid-way) leaves the marker stale and the check catches the stall.
+      if (verdict === "ok") stampBackfillSuccess(cfg.paths.dbFile);
+      process.exitCode = exitCodeFor(verdict);
       return;
     }
 
