@@ -11,8 +11,11 @@ import { coverageVerdict, exitCodeFor } from "./embed-cli.js";
  * Cross-language consistency, TS half. The "is this NULL row embeddable" rule lives in TWO languages —
  * store.ts countEmbeddings (this side) and tenant/store/watchd-checks/memory_embedding_health.py
  * (UNEMBEDDABLE_SQL) — and they must never disagree, or coverage and the alarm read the same store
- * differently. Both sides assert against the SAME shared fixture (../__fixtures__/embeddable-boundary.json):
- * edit one language's clause without the other and that side goes red here (TS) or in the python unittest.
+ * differently. The TS side asserts against the SAME shared fixture (../__fixtures__/embeddable-boundary.json)
+ * so a TS-clause edit that diverges from the fixture goes red HERE at edit-time. A matching .py-side test
+ * (test_emptiness_boundary.py) that would guard the .py clause the same way is DEFERRED (card 20c2d64b):
+ * it cannot be a CI edit-time gate while memory_embedding_health.py is gitignored (/tenant/**), so until it
+ * exists the .py side is guarded by the UNEMBEDDABLE_SQL single-source constant + the runtime tripwire.
  * The NULL-keywords rows are the load-bearing ones — the likeliest drift is one side COALESCE-ing null
  * keywords and the other not.
  */
