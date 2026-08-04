@@ -142,12 +142,42 @@ export function listOutboundQueued(limit = 50): OutboundItem[] {
     .all(limit) as OutboundItem[];
 }
 
+/**
+ * Atomically claim a queued row for sending. Returns true IFF this caller won it (flipped
+ * queued -> sending in a single statement). A losing caller — the row was already claimed by an
+ * overlapping tick, or already sent — gets false and MUST NOT post. This is the real fix for the
+ * double-post: listOutboundQueued alone is an unclaimed SELECT, so two overlapping drains both see
+ * the same 'queued' row; the claim lets exactly one of them proceed, and it holds even if two
+ * separate processes ever drain the queue (where an in-memory re-entrancy flag cannot help).
+ */
+export function claimOutbound(id: number): boolean {
+  return getDb().prepare(`UPDATE outbound_queue SET status='sending' WHERE id=? AND status='queued'`).run(id).changes === 1;
+}
+
+/**
+ * Boot recovery: a row left 'sending' when the process died mid-post never reached a terminal
+ * markOutboundSent/markOutboundFailed, so it would sit forever = a SILENTLY DROPPED owner message,
+ * the one failure worse than a duplicate. Requeue it for a normal retry — favouring at-least-once
+ * (a possible duplicate if Slack HAD accepted it just before the crash) over a drop. Mirrors
+ * reapStaleDelivering for inbound. MUST run at boot BEFORE startSlackSender, while nothing else
+ * writes the row, so it is race-free. Idempotent. Does not charge an attempt (a crash is not the
+ * message's fault); markOutboundFailed's attempts>=5 cap still bounds genuine repeated send failures.
+ * Returns the number of rows recovered.
+ */
+export function reapStaleOutboundSending(): number {
+  return getDb().prepare(`UPDATE outbound_queue SET status='queued' WHERE status='sending'`).run().changes;
+}
+
 export function markOutboundSent(id: number): void {
   getDb().prepare(`UPDATE outbound_queue SET status='sent', sent_at=unixepoch() WHERE id=?`).run(id);
 }
 
 export function markOutboundFailed(id: number, err: string): void {
+  // DEFENCE IN DEPTH (Toby): `AND status='sending'` so this can only ever touch a CLAIMED row. It
+  // can never resurrect a terminal row — a 'sent' row can never be flipped back to 'queued' and
+  // re-posted by any future caller, independent of the try-split in slack-send.ts that protects the
+  // one current call site. Idempotent: a second call on an already-failed/sent row is a no-op.
   getDb()
-    .prepare(`UPDATE outbound_queue SET status=CASE WHEN attempts>=5 THEN 'failed' ELSE 'queued' END, attempts=attempts+1, last_error=? WHERE id=?`)
+    .prepare(`UPDATE outbound_queue SET status=CASE WHEN attempts>=5 THEN 'failed' ELSE 'queued' END, attempts=attempts+1, last_error=? WHERE id=? AND status='sending'`)
     .run(err, id);
 }

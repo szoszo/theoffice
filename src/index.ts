@@ -8,7 +8,7 @@ import { startScheduler } from "./scheduler/index.js";
 import { startBus } from "./bus/index.js";
 import { startServer } from "./web/server.js";
 import { startAuthWatchdog } from "./web/auth-watchdog.js";
-import { reapStaleDelivering } from "./queue/index.js";
+import { reapStaleDelivering, reapStaleOutboundSending } from "./queue/index.js";
 import { log } from "./logger.js";
 
 const logger = log("boot");
@@ -30,6 +30,11 @@ async function main(): Promise<void> {
   const reaped = reapStaleDelivering();
   if (reaped.requeued > 0 || reaped.failed > 0)
     logger.warn({ requeued: reaped.requeued, failed: reaped.failed }, "boot reaper: recovered stale 'delivering' rows from prior run");
+
+  // Same recovery for the outbound side: a row left 'sending' by a mid-post process death would be a
+  // silently dropped owner message. Requeue it (at-least-once) BEFORE the sender starts. Race-free here.
+  const reapedOut = reapStaleOutboundSending();
+  if (reapedOut > 0) logger.warn({ requeued: reapedOut }, "boot reaper: requeued stale 'sending' outbound rows from prior run");
 
   // Phase 2: the single inbound-queue deliverer (only writer to a tmux pane).
   stops.push(startDeliverer(cfg));

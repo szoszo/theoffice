@@ -13,6 +13,8 @@ import {
   markFailed,
   enqueueOutbound,
   listOutboundQueued,
+  claimOutbound,
+  reapStaleOutboundSending,
   markOutboundSent,
   markOutboundFailed,
 } from "./index.js";
@@ -81,16 +83,46 @@ describe("outbound state-machine", () => {
     expect(listOutboundQueued().map((i) => i.id)).not.toContain(id);
   });
 
-  it("markOutboundFailed requeues with +1 attempt until the cap, then fails (CASE sees pre-increment attempts)", () => {
+  it("claimOutbound is atomic: for one queued row exactly one of two claimers wins", () => {
     const id = enqueueOutbound("a", "C123", "hi");
-    // attempts 0->5 all stay 'queued' (CASE WHEN attempts>=5 is evaluated on the OLD value); the call that
-    // sees attempts already at 5 is the one that flips to 'failed' (attempts then 6).
+    const first = claimOutbound(id);
+    const second = claimOutbound(id); // overlapping tick / second process
+    expect([first, second].filter(Boolean).length).toBe(1); // exactly one claim succeeds
+    expect(orow(id).status).toBe("sending");
+    expect(listOutboundQueued().map((i) => i.id)).not.toContain(id); // claimed row drops out of the queued list
+    markOutboundSent(id); // terminalize so this 'sending' row doesn't leak into the reaper test (shared DB)
+  });
+
+  it("reapStaleOutboundSending requeues a row orphaned in 'sending' (never drops an owner message)", () => {
+    const id = enqueueOutbound("a", "C123", "hi");
+    expect(claimOutbound(id)).toBe(true); // now 'sending', then the process 'dies' before markOutboundSent
+    const recovered = reapStaleOutboundSending();
+    expect(recovered).toBe(1);
+    expect(orow(id).status).toBe("queued"); // back in the queue for retry, not lost
+    expect(listOutboundQueued().map((i) => i.id)).toContain(id);
+  });
+
+  it("markOutboundFailed requeues with +1 attempt until the cap, then fails (only acts on a CLAIMED row)", () => {
+    const id = enqueueOutbound("a", "C123", "hi");
+    // markOutboundFailed now guards on status='sending', so a real retry cycle is claim -> fail:
+    // claim (queued->sending), then fail (sending->queued, attempts++). attempts 0->5 stay 'queued'
+    // (CASE WHEN attempts>=5 evaluated on the OLD value); the call seeing attempts=5 flips to 'failed'.
     for (let i = 1; i <= 5; i++) {
-      markOutboundFailed(id, "net");
+      expect(claimOutbound(id)).toBe(true); // queued -> sending
+      markOutboundFailed(id, "net"); // sending -> queued
       expect(orow(id)).toEqual({ status: "queued", attempts: i }); // still retryable
     }
+    expect(claimOutbound(id)).toBe(true); // queued -> sending
     markOutboundFailed(id, "net"); // now sees attempts=5 -> failed terminal
     expect(orow(id).status).toBe("failed");
     expect(orow(id).attempts).toBe(6);
+  });
+
+  it("markOutboundFailed CANNOT resurrect a terminal row (defence-in-depth WHERE status='sending' guard)", () => {
+    const id = enqueueOutbound("a", "C123", "hi");
+    claimOutbound(id);
+    markOutboundSent(id); // row is now terminal 'sent'
+    markOutboundFailed(id, "late throw"); // must be a NO-OP: cannot flip a sent row back to queued
+    expect(orow(id).status).toBe("sent"); // stayed sent, not resurrected
   });
 });

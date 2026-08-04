@@ -66,6 +66,33 @@ export const MIGRATIONS: Migration[] = [
     // and rewriting history to satisfy a new guard would be inventing evidence that never existed.
     sql: `ALTER TABLE kanban_cards ADD COLUMN verification TEXT;`,
   },
+  {
+    version: 5,
+    name: "outbound_queue sending-claim state",
+    // Double-post fix. The sender selected `WHERE status='queued'` with no claim, so a postMessage
+    // slower than the 1.5s tick let the next tick re-select the still-'queued' row and post it a
+    // SECOND time (one DB row, two Slack messages — invisible at the queue layer). The fix claims a
+    // row atomically (queued -> 'sending') before posting, so only one drain proceeds. That needs
+    // 'sending' in the status CHECK, and SQLite cannot ALTER a CHECK constraint — so rebuild the
+    // table. No FK references outbound_queue, and this runs inside the migration transaction. Any row
+    // caught mid-'sending' at boot is recovered by reapStaleOutboundSending() (requeued, never dropped).
+    sql: `CREATE TABLE outbound_queue_v5 (
+             id         INTEGER PRIMARY KEY AUTOINCREMENT,
+             agent_id   TEXT NOT NULL,
+             channel    TEXT NOT NULL,
+             text       TEXT NOT NULL,
+             status     TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','sending','sent','failed')),
+             attempts   INTEGER NOT NULL DEFAULT 0,
+             last_error TEXT,
+             created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+             sent_at    INTEGER
+           );
+           INSERT INTO outbound_queue_v5 (id, agent_id, channel, text, status, attempts, last_error, created_at, sent_at)
+             SELECT id, agent_id, channel, text, status, attempts, last_error, created_at, sent_at FROM outbound_queue;
+           DROP TABLE outbound_queue;
+           ALTER TABLE outbound_queue_v5 RENAME TO outbound_queue;
+           CREATE INDEX IF NOT EXISTS idx_outbound_status ON outbound_queue(status);`,
+  },
 ];
 
 /** Highest known schema version (the baseline, or the max migration version). */
