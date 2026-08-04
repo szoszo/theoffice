@@ -43,9 +43,3 @@ __pycache__/
 *.bak
 *.bak-*
 *.bak.*
-
-# tools/modal-sweeper: RETIRED interim stopgap (2026-08-04), superseded by the in-engine
-# session-hygiene sweeper (src/session/modal-sweeper.ts). Kept on disk as a MANUAL break-glass
-# tool only, out of git by decision (Michael + Toby) — a committed stale duplicate could be run
-# thinking it is the live path. Usage documented in the clear-agent-modal-safely skill.
-/tools/modal-sweeper/
