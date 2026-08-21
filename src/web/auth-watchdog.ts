@@ -22,8 +22,13 @@ import { log } from "../logger.js";
 const logger = log("auth-watchdog");
 
 const CHECK_MS = 5 * 60 * 1000;
-/** Never DM the same problem more than once an hour. */
-const REALERT_MS = 60 * 60 * 1000;
+/** Re-alert cadence, per severity. Hard-down states (expired / no-credential / panes signed out)
+ *  page HOURLY until fixed — the fleet is mute, the owner needs nagging. But the non-urgent
+ *  "expiring-soon" heads-up (nothing is broken, days of runway) re-alerts at most ONCE A DAY so it
+ *  can never become the hourly spam that went out 2:57/3:57/4:57… A status change still alerts
+ *  immediately, so a degrade from expiring-soon → hard-down pages at once regardless of this window. */
+const REALERT_MS_URGENT = 60 * 60 * 1000;
+const REALERT_MS_EXPIRING = 24 * 60 * 60 * 1000;
 /** Self-heal is capped so a genuinely broken agent can't be restart-looped forever. */
 const HEAL_COOLDOWN_MS = 10 * 60 * 1000;
 
@@ -79,7 +84,8 @@ export function startAuthWatchdog(cfg: EngineConfig): () => void {
     }
 
     // --- alert: needs the owner to actually sign in ---
-    const shouldAlert = health.status !== lastAlertStatus || now - lastAlertAt > REALERT_MS;
+    const realertMs = health.status === "expiring-soon" ? REALERT_MS_EXPIRING : REALERT_MS_URGENT;
+    const shouldAlert = health.status !== lastAlertStatus || now - lastAlertAt > realertMs;
     if (!shouldAlert) return;
     lastAlertStatus = health.status;
     lastAlertAt = now;
