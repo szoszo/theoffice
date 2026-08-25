@@ -22,3 +22,17 @@ jobs:
           sudo apt-get update && sudo apt-get install -y shellcheck
           # -S error: fail only on hard errors (existing scripts may carry style warnings)
           shellcheck -S error bootstrap.sh scripts/*.sh
+
+  # Latest-VERIFIED release pointer: the installer pins OFFICE_REF=release, so a workshop user always
+  # gets the newest state of main that PASSED CI — never a half-finished commit. This job fast-forwards
+  # `release` to the just-verified main SHA, and only runs after `build` is green on a push to main.
+  advance-release:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fast-forward release to the verified main SHA
+        run: git push origin "${{ github.sha }}:refs/heads/release"
