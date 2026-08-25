@@ -34,5 +34,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so the FF push has the ancestry back to release's tip
       - name: Fast-forward release to the verified main SHA
         run: git push origin "${{ github.sha }}:refs/heads/release"
