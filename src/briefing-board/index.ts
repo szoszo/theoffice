@@ -7,10 +7,10 @@ import { getDb } from "../db/index.js";
  * so a missing/stale section is visible to the compose gate instead of silently dropped.
  *
  * HEALTH IS EXCLUDED BY CONSTRUCTION (the load-bearing privacy guarantee):
- *   1. section_key must be in SECTION_WHITELIST — there is no 'health' section, so health can't be a section.
+ *   1. section_key must be in SECTION_WHITELIST — there is no 'health' section (the PRIMARY guard).
  *   2. no free-text catch-all key is accepted.
- *   3. write-boundary health-keyword DENY — even inside a whitelisted section, content that reads like real
- *      health data is refused, so a stray BP reading can't ride the shared board.
+ *   3. write-boundary health-keyword DENY on content (defence-in-depth) — a stray health reading in a
+ *      legit section is refused, so it can't ride the shared board.
  * Health is composed separately by marveen from its private .health-sync path and joined after the read.
  */
 
@@ -24,18 +24,34 @@ export const EXPECTED_SECTIONS: readonly SectionKey[] = SECTION_WHITELIST;
 export const STATUSES = ["ok", "stale", "skipped", "error"] as const;
 export type SectionStatus = (typeof STATUSES)[number];
 
+/** A section with no max_age is NOT immortal (Toby M2): freshness can't be disabled by omission. 6h default. */
+export const DEFAULT_MAX_AGE_SEC = 6 * 3600;
+/** as_of more than this into the future is a clock-skew/bug, not real provenance -> not fresh (Toby L1). */
+const CLOCK_SKEW_SEC = 120;
+/** Content size cap -> a runaway dump can't bloat the DB (Toby L3). */
+const MAX_CONTENT_LEN = 64 * 1024;
+
 /**
- * Write-boundary health-keyword deny — defence-in-depth behind the whitelist (Toby canaries it).
- *
- * STEM-based, NOT \b-word-bounded at the end: Hungarian agglutinates (diagnózis, vérnyomásom, kórházban,
- * orvosi), so `\bdiagnóz\b` misses "diagnózis" — the exact gap Toby's canary found (2026-08-26, "orvosi
- * kontroll ... kórház" + "a diagnózis szerint" reached the shared board). So each health STEM matches any
- * suffixed form. Terms are UNAMBIGUOUSLY medical (HU+EN); deliberately excludes ambiguous stems like
- * "kezel"(=handle/manage), "recept"(=recipe), "kontroll"(=control) that would false-block venture content,
- * and the generic word "health" (so "battery health"/"healthy runway" pass). Widen as the canary finds gaps.
+ * Strip diacritics + lowercase, so the health deny matches on plain ASCII. This is the root fix for the
+ * accent-boundary leak Toby found (2026-08-26): a \b-anchored regex treats accented letters as ASCII word
+ * boundaries, so "szisztolés" matched but "diagnózis" slipped — luck of the boundary. Deburring first makes
+ * \b/\w correct (ASCII string) and lets stems match every agglutinated HU form.
+ */
+function deburr(s: string): string {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+
+/**
+ * Health-keyword deny — matched against deburr(content). STEMS (no trailing \b) so any suffixed HU form is
+ * caught (vernyom -> vérnyomásom, korhaz -> kórházban, orvos -> orvosi). Only UNAMBIGUOUSLY-medical terms:
+ * deliberately excludes ambiguous words that would false-block venture content (Toby H1) — bare "pulse"
+ * (Pulse dashboards), "dose"/"adag" (dose of signups), "symptom" (a symptom of GC pressure), "kezel"/
+ * "recept"/"kontroll", and the tech-overloaded "diagnose/diagnostic" (kept HU-only "diagnoz"). Added weight
+ * + specialist + common-regimen terms (Toby H2). Non-exhaustive by nature (drug names, bare BP ratios) —
+ * it is DEFENCE-IN-DEPTH behind the whitelist; the compose side cross-checks high-consequence sections.
  */
 const HEALTH_DENY_RX =
-  /(?:blood\s*pressure|v[ée]rnyom|systol|diastol|szisztol|diasztol|mmhg|heart\s*rate|pulse|sz[íi]vritmus|medic|gy[óo]gyszer|orvos|doktor|k[óo]rh[áa]z|klinik|diagn|lelet|t[üu]net|\bbeteg|v[ée]rv[ée]tel|v[ée]rcukor|glucose|cholesterol|koleszterin|\d+\s*mg\b)/i;
+  /(?:blood\s*pressure|vernyom|systol|diastol|szisztol|diasztol|mmhg|heart\s*rate|szivritmus|medic|gyogyszer|orvos|doktor|korhaz|klinik|diagnoz|lelet|tunet|beteg|vervetel|vercukor|glucose|cholesterol|koleszterin|testsuly|body\s*weight|\bbmi\b|cardiolog|kardiolog|\d+\s*mg\b|ramipril|bisoprolol|amlodipin|concor)/;
 
 export interface BoardRow {
   section_key: string;
@@ -68,10 +84,16 @@ export function upsertSection(a: UpsertArgs): UpsertResult {
   if (!(SECTION_WHITELIST as readonly string[]).includes(a.section_key)) {
     return { ok: false, code: 400, error: `section_key '${a.section_key}' is not on the board whitelist (${SECTION_WHITELIST.join("|")}); no free-text sections, and health is not a section` };
   }
-  const status: SectionStatus = a.status && (STATUSES as readonly string[]).includes(a.status) ? a.status : "ok";
-  // Health deny scans the CONTENT (defence-in-depth behind the whitelist). A 'skipped'/'error' row can carry
-  // a short reason, so scan that too — the deny applies to whatever text lands on the shared board.
-  if (HEALTH_DENY_RX.test(a.content)) {
+  if (a.content.length > MAX_CONTENT_LEN) {
+    return { ok: false, code: 413, error: `content too large (${a.content.length} > ${MAX_CONTENT_LEN}); post a pre-digested section, not a raw dump` };
+  }
+  // Fail-loud status (Toby M1): an OMITTED status defaults to 'ok' (the agent reported no problem), but a
+  // PROVIDED-but-invalid status ('eror', 'BOGUS') coerces to 'error' — NEVER silently to 'ok', which would
+  // promote a broken section to healthy and let the gate read complete.
+  const status: SectionStatus =
+    a.status === undefined ? "ok" : (STATUSES as readonly string[]).includes(a.status) ? a.status : "error";
+  // Health deny scans deburred CONTENT on EVERY section (defence-in-depth behind the whitelist).
+  if (HEALTH_DENY_RX.test(deburr(a.content))) {
     return { ok: false, code: 422, error: "content looks like health data — the briefing board is shared and never carries health; keep it on the private health path" };
   }
   getDb()
@@ -88,7 +110,9 @@ export function upsertSection(a: UpsertArgs): UpsertResult {
 
 export interface BoardSectionView extends BoardRow {
   age_sec: number;
-  /** true when present, status ok, and within max_age_sec (or no max set). */
+  /** effective max age used for the freshness decision (the default when none was supplied). */
+  effective_max_age_sec: number;
+  /** true when present, status ok, as_of not in the future, and within the effective max age. */
   fresh: boolean;
 }
 
@@ -105,7 +129,9 @@ export interface BoardView {
 
 /**
  * Read the whole board with per-section freshness + a present-vs-EXPECTED diff, so the compose gate can
- * decide green/red from DATA. `nowSec` is injectable for tests.
+ * decide green/red from DATA. `nowSec` is injectable for tests. Freshness: status ok AND as_of not in the
+ * future (beyond clock skew) AND within the effective max age (a missing max_age falls back to the default,
+ * so nothing is immortal).
  */
 export function readBoard(nowSec: number = Math.floor(Date.now() / 1000)): BoardView {
   const rows = getDb()
@@ -114,8 +140,10 @@ export function readBoard(nowSec: number = Math.floor(Date.now() / 1000)): Board
   const byKey = new Map(rows.map((r) => [r.section_key, r]));
   const sections: BoardSectionView[] = rows.map((r) => {
     const age = nowSec - r.as_of;
-    const withinAge = r.max_age_sec == null || age <= r.max_age_sec;
-    return { ...r, age_sec: age, fresh: r.status === "ok" && withinAge };
+    const eff = r.max_age_sec == null ? DEFAULT_MAX_AGE_SEC : r.max_age_sec;
+    const notFuture = age >= -CLOCK_SKEW_SEC;
+    const withinAge = age <= eff;
+    return { ...r, age_sec: age, effective_max_age_sec: eff, fresh: r.status === "ok" && notFuture && withinAge };
   });
   const missing = EXPECTED_SECTIONS.filter((k) => !byKey.has(k));
   const stale = sections.filter((s) => EXPECTED_SECTIONS.includes(s.section_key as SectionKey) && !s.fresh).map((s) => s.section_key);
