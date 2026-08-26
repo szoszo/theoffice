@@ -25,12 +25,17 @@ export const STATUSES = ["ok", "stale", "skipped", "error"] as const;
 export type SectionStatus = (typeof STATUSES)[number];
 
 /**
- * Write-boundary health-keyword deny. Conservative + specific to real health DATA (bilingual — Szoszo's
- * health notes are HU/EN), NOT the generic word "health", so a legitimate venture section ("battery health",
- * "healthy runway") is not false-blocked. This is defence-in-depth behind the whitelist; Toby canaries it.
+ * Write-boundary health-keyword deny — defence-in-depth behind the whitelist (Toby canaries it).
+ *
+ * STEM-based, NOT \b-word-bounded at the end: Hungarian agglutinates (diagnózis, vérnyomásom, kórházban,
+ * orvosi), so `\bdiagnóz\b` misses "diagnózis" — the exact gap Toby's canary found (2026-08-26, "orvosi
+ * kontroll ... kórház" + "a diagnózis szerint" reached the shared board). So each health STEM matches any
+ * suffixed form. Terms are UNAMBIGUOUSLY medical (HU+EN); deliberately excludes ambiguous stems like
+ * "kezel"(=handle/manage), "recept"(=recipe), "kontroll"(=control) that would false-block venture content,
+ * and the generic word "health" (so "battery health"/"healthy runway" pass). Widen as the canary finds gaps.
  */
 const HEALTH_DENY_RX =
-  /\b(?:blood\s*pressure|v[ée]rnyom[áa]s|systolic|diastolic|szisztol|diasztol|mmHg|pulse\s*\d|heart\s*rate|medication|gy[óo]gyszer|\d+\s*mg\b|dose|adag|blood\s*test|v[ée]rv[ée]tel|lelet|diagnos|diagnóz|cholesterol|koleszterin|glucose|v[ée]rcukor|symptom|t[üu]net)\b/i;
+  /(?:blood\s*pressure|v[ée]rnyom|systol|diastol|szisztol|diasztol|mmhg|heart\s*rate|pulse|sz[íi]vritmus|medic|gy[óo]gyszer|orvos|doktor|k[óo]rh[áa]z|klinik|diagn|lelet|t[üu]net|\bbeteg|v[ée]rv[ée]tel|v[ée]rcukor|glucose|cholesterol|koleszterin|\d+\s*mg\b)/i;
 
 export interface BoardRow {
   section_key: string;

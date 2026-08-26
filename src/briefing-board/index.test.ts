@@ -37,18 +37,34 @@ describe("briefing board — whitelist + health exclusion (the privacy guarantee
     expect(readBoard(NOW).sections.length).toBe(0);
   });
 
-  it("DENIES health-keyword content even inside a whitelisted section", () => {
-    const bp = upsertSection({ section_key: "infra", agent: "darryl", content: "note: Szoszo BP 132/87, took 5mg ramipril", as_of: NOW });
-    expect(bp.ok).toBe(false);
-    expect(bp.code).toBe(422);
-    const hu = upsertSection({ section_key: "home", agent: "dwight", content: "vérnyomás 130/90 reggel", as_of: NOW });
-    expect(hu.ok).toBe(false);
+  it("DENIES health-keyword content even inside a whitelisted section (incl. HU agglutinated forms)", () => {
+    // Each must be rejected (422) and never written.
+    for (const c of [
+      "note: Szoszo BP 132/87, took 5mg ramipril",
+      "vérnyomás 130/90 reggel",
+      "orvosi kontroll jövő héten, kórház", // the exact canary gap (orvosi/kórház) — was slipping through
+      "a diagnózis szerint",                 // agglutinated: diagnózis, was missed by \bdiagnóz\b
+      "kórházban volt",                      // suffixed kórház
+      "új gyógyszert kapott",                // suffixed gyógyszer
+    ]) {
+      const r = upsertSection({ section_key: "home", agent: "dwight", content: c, as_of: NOW });
+      expect(r.ok, `should deny: ${c}`).toBe(false);
+      expect(r.code).toBe(422);
+    }
     expect(readBoard(NOW).sections.length).toBe(0);
   });
 
-  it("does NOT false-block legitimate venture content that merely resembles health words", () => {
-    const ok = upsertSection({ section_key: "car", agent: "dwight", content: "battery health 92%, tyres healthy, service due", as_of: NOW });
-    expect(ok.ok).toBe(true);
+  it("does NOT false-block legit venture content resembling health words / ambiguous stems", () => {
+    for (const c of [
+      "battery health 92%, tyres healthy, service due",
+      "Oscar kezeli a finance pipeline-t",   // kezel = manage, NOT treatment
+      "új recept a főzéshez",                // recept = recipe, NOT prescription
+      "verzió-kontroll és minőség-kontroll", // kontroll = control, NOT medical checkup
+      "healthy runway, 18 months",
+    ]) {
+      const r = upsertSection({ section_key: "car", agent: "dwight", content: c, as_of: NOW });
+      expect(r.ok, `should allow: ${c}`).toBe(true);
+    }
   });
 });
 
