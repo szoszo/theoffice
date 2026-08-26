@@ -51,7 +51,7 @@ function deburr(s: string): string {
  * it is DEFENCE-IN-DEPTH behind the whitelist; the compose side cross-checks high-consequence sections.
  */
 const HEALTH_DENY_RX =
-  /(?:blood\s*pressure|vernyom|systol|diastol|szisztol|diasztol|mmhg|heart\s*rate|szivritmus|medic|gyogyszer|orvos|doktor|korhaz|klinik|diagnoz|lelet|tunet|beteg|vervetel|vercukor|glucose|cholesterol|koleszterin|testsuly|body\s*weight|\bbmi\b|cardiolog|kardiolog|\d+\s*mg\b|ramipril|bisoprolol|amlodipin|concor)/;
+  /(?:blood\s*pressure|vernyom|systol|diastol|szisztol|diasztol|mmhg|heart\s*rate|heart\s*attack|szivroham|szivritmus|\bmedic|gyogyszer|orvos|doktor|\bdoctor\b|korhaz|klinik|diagnoz|lelet|tunet|beteg|injekci|vervetel|vercukor|glucose|cholesterol|koleszterin|testsuly|body\s*weight|\bweight\b|\bsuly\b|\bbmi\b|cardiolog|kardiolog|\d+\s*mg\b|ramipril|bisoprolol|amlodipin|concor)/;
 
 export interface BoardRow {
   section_key: string;

@@ -42,9 +42,14 @@ describe("briefing board — health deny (deburred stems)", () => {
       "kórházban volt",
       "új gyógyszert kapott: bisoprolol",
       "testsúly 82 kg ma",                   // weight (H2)
+      "súly 82 kg",                          // bare súly (re-canary FN)
       "BMI 24.1",                            // (H2)
       "cardiologist appointment thursday",   // specialist (H2)
       "kardiológus kontroll",
+      "doctor visit friday",                 // EN doctor (re-canary FN)
+      "szívroham után lábadozik",            // heart attack HU (re-canary FN)
+      "heart attack risk elevated",
+      "kapott egy injekciót",                // injekció HU (re-canary FN)
       "koleszterin és vércukor rendben",
     ]) {
       const r = upsertSection({ section_key: "home", agent: "d", content: c, as_of: NOW });
@@ -65,6 +70,11 @@ describe("briefing board — health deny (deburred stems)", () => {
       "új recept a főzéshez",                          // recept = recipe
       "verzió-kontroll és minőség-kontroll",           // kontroll = control
       "diagnostic logs enabled on the deploy",         // diagnostic (tech, not diagnózis)
+      "OBD diagnostics on the Kia",                    // car diagnostics
+      "telemedicine client onboarded",                 // telemedicine (re-canary fb#3, \bmedic)
+      "impulse buys up 12%",                           // impulse (not pulse)
+      "assembly line + heavyweight config",            // assembly/heavyweight (not \bsuly\b/\bweight\b)
+      "SQL injection scan clean",                      // injection (tech, not injekci)
       "healthy runway, 18 months",
     ]) {
       const r = upsertSection({ section_key: "infra", agent: "darryl", content: c, as_of: NOW });
