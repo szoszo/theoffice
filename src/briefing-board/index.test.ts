@@ -75,6 +75,7 @@ describe("briefing board — health deny (deburred stems)", () => {
       "impulse buys up 12%",                           // impulse (not pulse)
       "assembly line + heavyweight config",            // assembly/heavyweight (not \bsuly\b/\bweight\b)
       "SQL injection scan clean",                      // injection (tech, not injekci)
+      "Concord account + concordance report",          // Concord/concordance (re-canary #2, \bconcor\b)
       "healthy runway, 18 months",
     ]) {
       const r = upsertSection({ section_key: "infra", agent: "darryl", content: c, as_of: NOW });
