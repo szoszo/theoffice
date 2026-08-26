@@ -81,6 +81,7 @@ function contextPctFromTranscript(agentDir: string): number | null {
 }
 import { isKnownRuntime, listRuntimes, runtimeFor, DEFAULT_RUNTIME } from "../session/runtime.js";
 import { getOrCreateToken, checkBearer } from "./auth.js";
+import { readBoard, upsertSection } from "../briefing-board/index.js";
 import { checkDoneEvidence } from "./kanban-evidence.js";
 import { log } from "../logger.js";
 
@@ -505,6 +506,23 @@ async function handleApi(
     if (!b?.agentId || !b?.content) return json(res, 400, { error: "agentId and content required" });
     const id = saveMemory({ agentId: b.agentId, content: b.content, category: b.category, keywords: b.keywords });
     return json(res, 200, { id });
+  }
+
+  // GET /api/briefing-board — all sections + per-section freshness + present-vs-EXPECTED diff (the compose gate).
+  // POST /api/briefing-board — an agent UPSERTs its own section. Health is excluded by construction: a
+  // non-whitelisted section_key is rejected (400) and health-keyword content is denied (422); never written.
+  if (path === "/api/briefing-board" && m === "GET") {
+    return json(res, 200, readBoard());
+  }
+  if (path === "/api/briefing-board" && m === "POST") {
+    const raw = await readBody(req, res); if (raw === null) return;
+    const b = parseJson(raw);
+    if (!b?.section_key || !b?.agent || typeof b?.content !== "string" || typeof b?.as_of !== "number") {
+      return json(res, 400, { error: "section_key, agent, content, as_of (source-read unix seconds) required" });
+    }
+    const r = upsertSection({ section_key: b.section_key, agent: b.agent, content: b.content, as_of: b.as_of, max_age_sec: b.max_age_sec, status: b.status });
+    if (!r.ok) return json(res, r.code ?? 400, { error: r.error });
+    return json(res, 200, { ok: true, section_key: b.section_key });
   }
 
   // GET /api/kanban

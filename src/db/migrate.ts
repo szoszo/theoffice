@@ -103,6 +103,27 @@ export const MIGRATIONS: Migration[] = [
     // and only re-alarms a still-stuck queued row on a slow cadence, instead of paging every tick.
     sql: `ALTER TABLE inbound_queue ADD COLUMN owner_alarmed_at INTEGER;`,
   },
+  {
+    version: 7,
+    name: "briefing_board",
+    // The morning-briefing collection store (design artifact 86ec0cfc). One row per non-private venture
+    // SECTION that the fleet pre-writes into, so composition reads a complete/fresh board instead of racing
+    // agents on the bus — completeness becomes a data property. section_key is the PRIMARY KEY: each agent
+    // UPSERTs only its own section. as_of is the SOURCE-READ time (provenance, agent-supplied) so a re-post
+    // of stale data reads stale; updated_at is the server write time. status lets an agent report it could
+    // not gather (skipped/error), which the compose gate surfaces instead of silently dropping the section.
+    // HEALTH is EXCLUDED BY CONSTRUCTION: 'health' is not a valid section_key and the endpoint rejects any
+    // key outside the whitelist + denies health-keyword content — health stays on marveen's private path.
+    sql: `CREATE TABLE briefing_board (
+            section_key TEXT PRIMARY KEY,
+            agent       TEXT NOT NULL,
+            content     TEXT NOT NULL,
+            as_of       INTEGER NOT NULL,
+            max_age_sec INTEGER,
+            status      TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok','stale','skipped','error')),
+            updated_at  INTEGER NOT NULL DEFAULT (unixepoch())
+          );`,
+  },
 ];
 
 /** Highest known schema version (the baseline, or the max migration version). */
