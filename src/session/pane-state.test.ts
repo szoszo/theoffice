@@ -529,6 +529,21 @@ describe("detectsPermissionPrompt — DETECT (to alarm), the sweeper must NEVER 
     const quotedDisc = pane("● earlier I saw: WARNING Bypass Permissions mode, and accepted", SEP, "❯ ", SEP, FOOTER);
     expect(detectsPermissionPrompt(quotedDisc)).toBe(false); // idle footer -> state!=unknown -> not flagged
   });
+
+  // The OTHER startup gate: the folder-trust dialog (separate from bypass, different wording). A fresh
+  // install / un-seeded hasTrustDialogAccepted wedges here too, and it also carries no idle footer.
+  const FOLDER_TRUST = pane(
+    "  Do you trust the files in this folder?",
+    "  /opt/claude/theoffice/tenant/agents/newbie",
+    "   ❯ 1. Yes, proceed",
+    "     2. No, exit",
+  );
+
+  it("fires on the startup folder-trust dialog (the second startup gate)", () => {
+    expect(detectPaneState(FOLDER_TRUST)).toBe("unknown");
+    expect(detectsPermissionPrompt(FOLDER_TRUST)).toBe(true);
+    expect(detectsUsageLimitModal(FOLDER_TRUST)).toBe(false); // consent modal — detect only, never keystroke
+  });
 });
 
 describe("usage-limit sweeper acts on NOTHING but the positive limit-modal signature (point 3)", () => {

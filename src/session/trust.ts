@@ -36,8 +36,12 @@ interface ClaudeConfig {
  * one read-modify-write for both gates, and it preserves every other key in the file
  * (atomic rename — never leaves a half-written ~/.claude.json).
  */
-export function ensureClaudeGatesAccepted(agentDir: string): void {
-  const home = process.env.HOME;
+export function ensureClaudeGatesAccepted(agentDir: string, homeOverride?: string): void {
+  // Seed into the AGENT's resolved HOME (from buildAgentEnv), not the engine's. An ownAccount:true agent
+  // runs with HOME=agent.dir/home, so seeding process.env.HOME would write the gates to the wrong home and
+  // the agent would wedge on both startup dialogs (issue #28). Falls back to process.env.HOME for shared-
+  // account agents (whose HOME == the engine's), preserving the prior behaviour.
+  const home = homeOverride ?? process.env.HOME;
   if (!home) return;
   const cfgPath = join(home, ".claude.json");
   const dir = resolve(agentDir);

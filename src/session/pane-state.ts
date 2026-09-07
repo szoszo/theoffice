@@ -191,6 +191,12 @@ const PERMISSION_PROMPT_RX =
 // from the RUNNING footer "bypass permissions on" (lowercase, 'on') and from mid-session approval menus.
 const BYPASS_DISCLAIMER_RX = /Bypass Permissions mode\b|\bYes, I accept\b/;
 
+// The OTHER startup gate: the folder-trust dialog ("Do you trust the files in this folder?" / older form
+// "Is this a project you trust?"). Separate from bypass, seeded by trust.ts hasTrustDialogAccepted; detected
+// here so a fresh/un-seeded install wedged on it ALARMS instead of silent 'unknown'. Wording covers the
+// current + older Claude Code forms. (Detection only — the sweeper never keystrokes a consent modal.)
+const FOLDER_TRUST_RX = /trust the files in this folder|Is this a project you trust|Do you trust this folder/i;
+
 /**
  * True when the pane is blocked on a permission/approval prompt. Gated on detectPaneState==='unknown'
  * (a live approval menu carries no idle footer) so an idle/busy pane that merely quotes the wording in a
@@ -199,7 +205,7 @@ const BYPASS_DISCLAIMER_RX = /Bypass Permissions mode\b|\bYes, I accept\b/;
 export function detectsPermissionPrompt(pane: string): boolean {
   if (!pane) return false;
   if (detectPaneState(pane) !== "unknown") return false;
-  return PERMISSION_PROMPT_RX.test(pane) || BYPASS_DISCLAIMER_RX.test(pane);
+  return PERMISSION_PROMPT_RX.test(pane) || BYPASS_DISCLAIMER_RX.test(pane) || FOLDER_TRUST_RX.test(pane);
 }
 
 /**

@@ -222,7 +222,7 @@ function launchClaude(cfg: EngineConfig, agent: AgentDef): boolean {
   // pre-accept Claude's two startup gates (folder trust + the bypass-permissions
   // disclaimer); otherwise a fresh pane blocks on an interactive dialog forever and
   // never reaches idle, so the deliverer can never hand it a message. Idempotent.
-  ensureClaudeGatesAccepted(agent.dir);
+  ensureClaudeGatesAccepted(agent.dir, env.HOME); // seed into the agent's RESOLVED home (ownAccount uses its own) — issue #28
   const ok = newSession(cfg.tmux.socket, session, { cwd: agent.dir, command, env });
   // Only a genuinely NEW session needs priming. ok=false means the session already existed (e.g. an
   // engine restart while the decoupled tmux server kept it alive) — it already holds its context, so we

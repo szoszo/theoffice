@@ -102,6 +102,24 @@ describe("ensureClaudeGatesAccepted", () => {
     expect(existsSync(cfgPath())).toBe(false);
   });
 
+  // Issue #28: an ownAccount:true agent runs with its OWN HOME (agent.dir/home), so the gates must be
+  // seeded into THAT home (2nd arg), not the engine's process.env.HOME — else the agent reads un-seeded
+  // gates and wedges on both dialogs.
+  it("seeds into the RESOLVED home passed as the 2nd arg, not process.env.HOME", () => {
+    const engineHome = home; // beforeEach temp == process.env.HOME
+    const agentHome = mkdtempSync(join(tmpdir(), "office-agenthome-"));
+    try {
+      ensureClaudeGatesAccepted(agentDir, agentHome);
+      // the new bypass key lands in the AGENT's home
+      expect(existsSync(join(agentHome, ".claude", "settings.json"))).toBe(true);
+      expect(JSON.parse(readFileSync(join(agentHome, ".claude", "settings.json"), "utf8")).skipDangerousModePermissionPrompt).toBe(true);
+      // and NOT in the engine home
+      expect(existsSync(join(engineHome, ".claude", "settings.json"))).toBe(false);
+    } finally {
+      rmSync(agentHome, { recursive: true, force: true });
+    }
+  });
+
   it("survives a corrupt ~/.claude.json without throwing or truncating it", () => {
     writeFileSync(cfgPath(), "{ not json");
     expect(() => ensureClaudeGatesAccepted(agentDir)).not.toThrow();
