@@ -504,6 +504,31 @@ describe("detectsPermissionPrompt — DETECT (to alarm), the sweeper must NEVER 
     expect(detectPaneState(quoted)).toBe("idle");
     expect(detectsPermissionPrompt(quoted)).toBe(false);
   });
+
+  // The STARTUP bypass-permissions disclaimer — a fresh install (or an un-seeded new key) wedges here.
+  // It carries no idle footer (state=unknown) and uses DIFFERENT wording from a mid-session approval, so
+  // without explicit detection a wedged agent reads as plain "unknown" (silent): the deliverer never fires
+  // and the owner DM sits in inbound_queue at attempts 0. This is the Legoza-install failure mode.
+  const BYPASS_DISCLAIMER = pane(
+    "  WARNING: Claude Code running in Bypass Permissions mode",
+    "  Claude Code will not ask before running potentially dangerous commands.",
+    "   ❯ 1. No, exit",
+    "     2. Yes, I accept",
+  );
+
+  it("fires on the startup bypass-permissions disclaimer (else a wedged fresh install reads as silent unknown)", () => {
+    expect(detectPaneState(BYPASS_DISCLAIMER)).toBe("unknown");
+    expect(detectsPermissionPrompt(BYPASS_DISCLAIMER)).toBe(true);
+    // the sweeper must NEVER auto-accept it (accepting approves bypass mode) — detect-to-alarm only
+    expect(detectsUsageLimitModal(BYPASS_DISCLAIMER)).toBe(false);
+  });
+
+  it("does NOT fire on the running bypass footer or a quoted disclaimer in scrollback", () => {
+    const running = pane("● all good", SEP, "❯ ", SEP, FOOTER); // 'bypass permissions on' footer = live, not the disclaimer
+    expect(detectsPermissionPrompt(running)).toBe(false);
+    const quotedDisc = pane("● earlier I saw: WARNING Bypass Permissions mode, and accepted", SEP, "❯ ", SEP, FOOTER);
+    expect(detectsPermissionPrompt(quotedDisc)).toBe(false); // idle footer -> state!=unknown -> not flagged
+  });
 });
 
 describe("usage-limit sweeper acts on NOTHING but the positive limit-modal signature (point 3)", () => {

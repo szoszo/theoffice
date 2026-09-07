@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, readdirSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ensureClaudeGatesAccepted } from "./trust.js";
@@ -16,6 +16,8 @@ const realHome = process.env.HOME;
 const cfgPath = () => join(home, ".claude.json");
 const readCfg = () => JSON.parse(readFileSync(cfgPath(), "utf8"));
 const writeCfg = (o: unknown) => writeFileSync(cfgPath(), JSON.stringify(o, null, 2));
+const settingsPath = () => join(home, ".claude", "settings.json");
+const readSettings = () => JSON.parse(readFileSync(settingsPath(), "utf8"));
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "office-trust-"));
@@ -67,7 +69,35 @@ describe("ensureClaudeGatesAccepted", () => {
     expect(readdirSync(home).filter((f) => f.includes(".tmp"))).toEqual([]);
   });
 
-  it("does nothing when claude is not initialised yet (no ~/.claude.json to seed)", () => {
+  // CC 2.1.x moved bypass-disclaimer acceptance to ~/.claude/settings.json:skipDangerousModePermissionPrompt.
+  // The legacy ~/.claude.json key alone no longer stops the disclaimer, so a fresh install wedges on it.
+  it("seeds skipDangerousModePermissionPrompt in ~/.claude/settings.json, creating the file when missing", () => {
+    writeCfg({ projects: {} });
+    ensureClaudeGatesAccepted(agentDir);
+    expect(existsSync(settingsPath())).toBe(true);
+    expect(readSettings().skipDangerousModePermissionPrompt).toBe(true);
+  });
+
+  it("seeds the new bypass key even when ~/.claude.json is absent (fresh install — the Legoza case)", () => {
+    // fresh box: no ~/.claude.json yet, but the disclaimer must still be pre-accepted
+    ensureClaudeGatesAccepted(agentDir);
+    expect(existsSync(cfgPath())).toBe(false); // we do not fabricate ~/.claude.json
+    expect(readSettings().skipDangerousModePermissionPrompt).toBe(true); // but the operative new key IS seeded
+  });
+
+  it("merges the new key into an existing settings.json, preserving Claude's own keys", () => {
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    writeFileSync(settingsPath(), JSON.stringify({ theme: "dark", model: "opus", permissions: { allow: ["x"] } }, null, 2));
+    writeCfg({ projects: {} });
+    ensureClaudeGatesAccepted(agentDir);
+    const s = readSettings();
+    expect(s.skipDangerousModePermissionPrompt).toBe(true);
+    expect(s.theme).toBe("dark");
+    expect(s.model).toBe("opus");
+    expect(s.permissions).toEqual({ allow: ["x"] });
+  });
+
+  it("does not fabricate ~/.claude.json when it is absent (only settings.json is seeded there)", () => {
     ensureClaudeGatesAccepted(agentDir);
     expect(existsSync(cfgPath())).toBe(false);
   });

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { log } from "../logger.js";
 
@@ -41,8 +41,41 @@ export function ensureClaudeGatesAccepted(agentDir: string): void {
   if (!home) return;
   const cfgPath = join(home, ".claude.json");
   const dir = resolve(agentDir);
+
+  // Gate 2, CURRENT form (Claude Code 2.1.x): the bypass-disclaimer acceptance MOVED from the legacy
+  // ~/.claude.json `bypassPermissionsModeAccepted` to ~/.claude/settings.json `skipDangerousModePermissionPrompt`.
+  // A current `claude` reads the NEW key, so it must be seeded or a fresh install wedges on the
+  // "WARNING … Bypass Permissions mode … Yes, I accept" dialog. Seed it INDEPENDENTLY of ~/.claude.json
+  // (which may not exist yet on a fresh box). Atomic, mkdir -p, MERGE (preserve Claude's own settings),
+  // and never clobber an unreadable/corrupt settings.json. The legacy key below stays as a fallback for
+  // older Claude versions — it is NOT proof the gate is open.
   try {
-    if (!existsSync(cfgPath)) return; // claude not initialised yet — nothing safe to seed
+    const settingsPath = join(home, ".claude", "settings.json");
+    let settings: Record<string, unknown> | null = {};
+    if (existsSync(settingsPath)) {
+      try {
+        const parsed = JSON.parse(readFileSync(settingsPath, "utf8"));
+        settings = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+      } catch {
+        settings = null; // corrupt — do not clobber the owner's real settings
+      }
+    }
+    if (settings === null) {
+      logger.warn({ settingsPath }, "~/.claude/settings.json unreadable — left intact, bypass key NOT seeded");
+    } else if (settings.skipDangerousModePermissionPrompt !== true) {
+      settings.skipDangerousModePermissionPrompt = true;
+      mkdirSync(join(home, ".claude"), { recursive: true });
+      const tmp = `${settingsPath}.office-${process.pid}.tmp`;
+      writeFileSync(tmp, JSON.stringify(settings, null, 2));
+      renameSync(tmp, settingsPath); // atomic: never leaves a half-written settings.json
+      logger.info({ dir }, "seeded skipDangerousModePermissionPrompt in ~/.claude/settings.json");
+    }
+  } catch (err) {
+    logger.warn({ dir, err }, "could not seed ~/.claude/settings.json bypass key (agent may block on the disclaimer)");
+  }
+
+  try {
+    if (!existsSync(cfgPath)) return; // legacy ~/.claude.json not initialised yet — nothing more to seed here
     const cfg = JSON.parse(readFileSync(cfgPath, "utf8")) as ClaudeConfig;
     cfg.projects ??= {};
     const existing = cfg.projects[dir];

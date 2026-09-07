@@ -183,6 +183,14 @@ export function detectsUnsafeUsageLimitModal(pane: string): boolean {
 const PERMISSION_PROMPT_RX =
   /No, and tell Claude what to do differently|Yes, and (?:don't|do not) ask again|Do you want to (?:proceed|make this edit|create|run|allow)/;
 
+// The STARTUP bypass-permissions disclaimer ("WARNING … Claude Code running in Bypass Permissions mode …
+// 1. No, exit  2. Yes, I accept"). A fresh install, or one whose skipDangerousModePermissionPrompt key is
+// un-seeded, wedges here — and it carries NO idle footer, so without this it reads as plain "unknown"
+// (silent): the deliverer never fires and the owner DM sits in inbound_queue at attempts 0. trust.ts seeds
+// the key to prevent it; THIS makes a wedge visible/alarmable if prevention ever fails. Anchors are distinct
+// from the RUNNING footer "bypass permissions on" (lowercase, 'on') and from mid-session approval menus.
+const BYPASS_DISCLAIMER_RX = /Bypass Permissions mode\b|\bYes, I accept\b/;
+
 /**
  * True when the pane is blocked on a permission/approval prompt. Gated on detectPaneState==='unknown'
  * (a live approval menu carries no idle footer) so an idle/busy pane that merely quotes the wording in a
@@ -191,7 +199,7 @@ const PERMISSION_PROMPT_RX =
 export function detectsPermissionPrompt(pane: string): boolean {
   if (!pane) return false;
   if (detectPaneState(pane) !== "unknown") return false;
-  return PERMISSION_PROMPT_RX.test(pane);
+  return PERMISSION_PROMPT_RX.test(pane) || BYPASS_DISCLAIMER_RX.test(pane);
 }
 
 /**
