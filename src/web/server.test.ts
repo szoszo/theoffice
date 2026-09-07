@@ -437,3 +437,56 @@ describe("kanban card metadata PATCH (priority/project only)", () => {
     expect((await getCard(id)).priority).toBe("normal"); // nothing mutated
   });
 });
+
+describe("POST /api/memories category validation (invalid -> 400, not a raw 500)", () => {
+  let tempDir: string;
+  let cfg: any;
+  let stopServer: () => void;
+  let base: string;
+  const auth = { authorization: `Bearer ${MOCK_TOKEN}`, "content-type": "application/json" };
+
+  const postMemory = (body: unknown) =>
+    fetch(`${base}/api/memories`, { method: "POST", headers: auth, body: JSON.stringify(body) });
+
+  beforeEach(async () => {
+    tempDir = join(tmpdir(), "theoffice-memcat-" + Math.random().toString(36).slice(2));
+    mkdirSync(join(tempDir, "store"), { recursive: true });
+    writeFileSync(join(tempDir, "store", ".dashboard-token"), MOCK_TOKEN);
+    openDb(join(tempDir, "store", "test.db"));
+    const port = await freePort();
+    base = `http://127.0.0.1:${port}`;
+    cfg = {
+      web: { host: "127.0.0.1", port, rateLimit: { maxFails: 50, windowMs: 1000, blockMs: 1000 } },
+      paths: { dashboardTokenFile: join(tempDir, "store", ".dashboard-token"), tenantRoot: tempDir },
+      owner: { timezone: "UTC" },
+      channel: { provider: "none" },
+    };
+    stopServer = startServer(cfg);
+    await new Promise((r) => setTimeout(r, 100));
+  });
+
+  afterEach(() => {
+    if (stopServer) stopServer();
+    closeDb();
+    if (existsSync(tempDir)) rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  // The memories table has CHECK (category IN 'hot','warm','cold','shared'). Before this guard a bad
+  // category reached saveMemory and surfaced as a raw 500 SqliteError — indistinguishable from a dead
+  // write path (it fooled two agents: category=project and category=feedback, which belong to the OTHER
+  // memory taxonomy). The guard must reject it at the API boundary with an actionable 400.
+  it("rejects an invalid category with 400, not a 500", async () => {
+    const res = await postMemory({ agentId: "darryl", content: "x", category: "project" });
+    expect(res.status).toBe(400);
+  });
+
+  it("does not reject a valid category (passes the guard)", async () => {
+    const res = await postMemory({ agentId: "darryl", content: "x", category: "warm" });
+    expect(res.status).not.toBe(400);
+  });
+
+  it("does not reject a missing category (defaults, passes the guard)", async () => {
+    const res = await postMemory({ agentId: "darryl", content: "x" });
+    expect(res.status).not.toBe(400);
+  });
+});

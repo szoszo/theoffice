@@ -504,7 +504,16 @@ async function handleApi(
     const raw = await readBody(req, res); if (raw === null) return;
     const b = parseJson(raw);
     if (!b?.agentId || !b?.content) return json(res, 400, { error: "agentId and content required" });
-    const id = saveMemory({ agentId: b.agentId, content: b.content, category: b.category, keywords: b.keywords });
+    // Validate category at the boundary. The memories table has CHECK (category IN hot/warm/cold/shared);
+    // an out-of-set value used to reach saveMemory and surface as a raw 500 SqliteError — which reads as a
+    // dead write path and fooled agents reusing the OTHER memory taxonomy (feedback/project/reference are
+    // NOT categories here; feedback is category=warm + a feedback TYPE). Reject with an actionable 400;
+    // default a missing category to warm (unchanged behaviour).
+    const MEMORY_CATEGORIES = ["hot", "warm", "cold", "shared"];
+    if (b.category !== undefined && b.category !== null && !MEMORY_CATEGORIES.includes(b.category)) {
+      return json(res, 400, { error: `category must be one of ${MEMORY_CATEGORIES.join(", ")} (feedback/project/reference are the auto-memory taxonomy, not this one)` });
+    }
+    const id = saveMemory({ agentId: b.agentId, content: b.content, category: b.category ?? "warm", keywords: b.keywords });
     return json(res, 200, { id });
   }
 
