@@ -59,12 +59,16 @@ RESYNC_TIMEOUT_S = 3600                             # worst-case oom re-read bou
 #     ollama 0 + agents ~807 + java ~182 + other ~147 = ~1134 MiB, observed band ~1100-1350.
 # PROOF it's sticky: unloading the model dropped ollama resident 1720->430 MiB while container
 # swap held 1135->1134 MiB. So the honest post-#1 steady is ~1.1 GB, NOT 0.5 GB.
-#   2048 MiB = ~700-900 MiB above the measured band (routine agent breathing won't trip it) AND
-#   50% of the host-backed 4 GB ceiling, leaving ~2 GB of runway to react. To reach 2048, agent+
-#   java swap must grow ~900 MiB above steady — and ollama can no longer contribute a single page,
-#   so that can ONLY be a real agent leak/runaway, exactly what we want paged about. Because the
-#   notify heartbeats (never latches), gradual growth from 2 GB up keeps re-alerting, not one-shot.
-SWAP_HIGH_MIB = 2048
+#   RE-DERIVED 2026-09-07 (Darryl, marveen-approved 14601): the steady band CREPT UP as the agent
+#   fleet grew to ~10 long-lived sessions — cold-page accumulation (nightly reset clears context but
+#   did not re-exec the process), so the observed band moved to ~2000-2238 MiB. At 2048 the tripwire
+#   sat INSIDE that band and fired daily false in-band crossings (2026-09-06/07). Raised to 2500 =
+#   a few hundred MiB above the ~2165-2238 band, so routine fleet breathing won't trip it while a
+#   genuine runaway still alarms, and it still leaves ~1.6 GB runway to the 4 GB host-backed ceiling.
+#   The durable fix (re-exec agents on the nightly reset, in progress) will drop the baseline back
+#   down; revisit this threshold downward once that lands. Heartbeats never latch (gradual growth
+#   above 2500 keeps re-alerting), and the (B) noise-dedup still suppresses flat-repeat heartbeats.
+SWAP_HIGH_MIB = 2500
 # RE-ARM IS TIME-BASED, NOT LEVEL-BASED — this is the fix for the silent-guard defect. The old
 # design re-armed only when swap fell back under a CLEAR level sitting ~12 MiB under steady; if
 # steady ever crept past CLEAR the tripwire would fire once and latch off forever while still
@@ -74,6 +78,17 @@ SWAP_HIGH_MIB = 2048
 # we go silent beyond FIRE_COOLDOWN_S. Persisting-high => a heartbeat every FIRE_COOLDOWN_S (the
 # opposite of silent); dropping-low => we simply stop firing. See the proof note in main().
 FIRE_COOLDOWN_S = 600                                # max silence while persistently high = 10 min
+# (B) HEARTBEAT NOISE-DEDUP (marveen-approved 2026-09-02; noise-only, does NOT lower detection).
+# Problem: while swap sits FLAT above SWAP_HIGH_MIB the notify re-fires every FIRE_COOLDOWN_S with an
+# identical, already-reported value (16+ persistence heartbeats for one unchanged crossing). Fix: a
+# persistence heartbeat re-fires ONLY when it is not a pure repeat — GROWTH >= SWAP_HB_EPSILON_MIB
+# above the last-notified value (the leak direction; a single-pid climb surfaces here as aggregate
+# growth), OR the long SWAP_HB_KEEPALIVE_S has elapsed so we are NEVER fully silent while high (the
+# file's never-latch invariant is preserved, just at a lower cadence for a flat crossing). A FRESH
+# crossing (clear-below-then-re-cross) and oom_kill detection are unaffected. Threshold, per-crossing
+# ollama shed, and detection are all untouched — this changes notification frequency only.
+SWAP_HB_EPSILON_MIB = 64                             # >=64 MiB rise above last-notified = real growth -> re-alert
+SWAP_HB_KEEPALIVE_S = 21600                          # never fully silent while high: >=1 flat "still high" ping / 6h
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE", "http://127.0.0.1:11434")
 SHED_MODEL = os.environ.get("OOMWATCH_SHED_MODEL", "bge-m3")
 WAKE_TO = "darryl"                                   # owning agent for OOM triage
@@ -269,6 +284,7 @@ def main() -> int:
     # `swap_was_high` gates ONLY the secondary shed (edge-trigger, so we don't re-shed a model that
     # just reloads); it does NOT gate the notify, so even if it were stuck True the alerts continue.
     last_swap_fire = 0.0           # epoch of last swap notify; 0 => first crossing fires immediately
+    last_notified_mib = 0          # (B) swap MiB at last notify; a heartbeat re-fires only on growth vs this
     swap_was_high = False          # edge tracker for the SECONDARY shed only (never gates notify)
     heartbeat_n = 0                # consecutive notifies while continuously high (for message context)
     last_resync = time.time()
@@ -315,7 +331,12 @@ def main() -> int:
         if sw is not None:
             if sw >= SWAP_HIGH_MIB:
                 fresh = not swap_was_high
-                if fresh or (now - last_swap_fire) >= FIRE_COOLDOWN_S:
+                # (B) fire on: fresh crossing, OR real GROWTH once cooled, OR the long keepalive.
+                # Suppress an identical/flat/declining already-reported crossing (the heartbeat spam).
+                cooled = (now - last_swap_fire) >= FIRE_COOLDOWN_S
+                grew = (sw - last_notified_mib) >= SWAP_HB_EPSILON_MIB
+                keepalive = (now - last_swap_fire) >= SWAP_HB_KEEPALIVE_S
+                if fresh or (cooled and grew) or keepalive:
                     heartbeat_n = 1 if fresh else heartbeat_n + 1
                     # 1) NOTIFY FIRST, unconditionally — the primary value of the tripwire.
                     note = ("shedding ollama now (secondary, RAM-relief only — does NOT reclaim the "
@@ -324,6 +345,7 @@ def main() -> int:
                             "re-shedding is pointless, the model reloads on demand)")
                     fire_swap(sw, note, heartbeat_n)
                     last_swap_fire = now
+                    last_notified_mib = sw
                     # 2) SECONDARY remediation, only on a fresh crossing, AFTER the notify.
                     if fresh:
                         log("swap %d MiB >= %d (fresh) -> %s" % (sw, SWAP_HIGH_MIB, shed_ollama()))
