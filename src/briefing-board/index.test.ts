@@ -109,6 +109,54 @@ describe("briefing board — freshness / completeness / fail-loud integrity", ()
     expect(s.fresh).toBe(false);
   });
 
+  it("[G1] an OMITTED max_age_sec PRESERVES the stored guard (does not silently null it)", () => {
+    // The guard-erosion bug: a writer that stops sending the field used to overwrite the contract with
+    // NULL, quietly demoting the section to the 6h default. Omission must be a no-op on this field.
+    upsertSection({ section_key: "finance", agent: "cfo", content: "v1", as_of: NOW, max_age_sec: 3600 });
+    upsertSection({ section_key: "finance", agent: "cfo", content: "v2", as_of: NOW }); // no max_age_sec
+    const s = readBoard(NOW).sections.find((s) => s.section_key === "finance")!;
+    expect(s.content).toBe("v2"); // the rest of the row DID update
+    expect(s.max_age_sec).toBe(3600); // ...but the guard survived
+    expect(s.effective_max_age_sec).toBe(3600);
+  });
+
+  it("[G2] a preserved guard still bites — omission does not widen the freshness window", () => {
+    upsertSection({ section_key: "finance", agent: "cfo", content: "v1", as_of: NOW, max_age_sec: 3600 });
+    // Re-write with an as_of older than the 3600 guard but well inside the 6h default it used to fall to.
+    upsertSection({ section_key: "finance", agent: "cfo", content: "v2", as_of: NOW - 7200 });
+    const s = readBoard(NOW).sections.find((s) => s.section_key === "finance")!;
+    expect(s.fresh).toBe(false); // would have read FRESH under the eroded 6h default
+  });
+
+  it("[G3] an EXPLICIT null resets to the default (the guard is still clearable on purpose)", () => {
+    upsertSection({ section_key: "finance", agent: "cfo", content: "v1", as_of: NOW, max_age_sec: 3600 });
+    upsertSection({ section_key: "finance", agent: "cfo", content: "v2", as_of: NOW, max_age_sec: null });
+    const s = readBoard(NOW).sections.find((s) => s.section_key === "finance")!;
+    expect(s.max_age_sec).toBe(null);
+    expect(s.effective_max_age_sec).toBe(DEFAULT_MAX_AGE_SEC);
+  });
+
+  it("[G4] a brand-new section that omits max_age_sec still gets the default (no leak from another key)", () => {
+    upsertSection({ section_key: "toggl", agent: "pam", content: "c", as_of: NOW, max_age_sec: 900 });
+    upsertSection({ section_key: "car", agent: "d", content: "c", as_of: NOW }); // never written before
+    const car = readBoard(NOW).sections.find((s) => s.section_key === "car")!;
+    expect(car.max_age_sec).toBe(null);
+    expect(car.effective_max_age_sec).toBe(DEFAULT_MAX_AGE_SEC);
+  });
+
+  it("[G5] a PROVIDED but invalid max_age_sec fails loud (never lands in the DB)", () => {
+    upsertSection({ section_key: "home", agent: "d", content: "v1", as_of: NOW, max_age_sec: 3600 });
+    for (const bad of [0, -1, 1.5, "3600", NaN]) {
+      // @ts-expect-error deliberately bad max_age_sec
+      const r = upsertSection({ section_key: "home", agent: "d", content: "v2", as_of: NOW, max_age_sec: bad });
+      expect(r.ok, `should reject ${JSON.stringify(bad)}`).toBe(false);
+      expect(r.code).toBe(400);
+    }
+    const s = readBoard(NOW).sections.find((s) => s.section_key === "home")!;
+    expect(s.content).toBe("v1"); // rejected writes changed nothing at all
+    expect(s.max_age_sec).toBe(3600);
+  });
+
   it("[L1] a FUTURE as_of does not read fresh", () => {
     upsertSection({ section_key: "weather", agent: "d", content: "c", as_of: NOW + 100000, max_age_sec: 3600 });
     expect(readBoard(NOW).sections.find((s) => s.section_key === "weather")!.fresh).toBe(false);

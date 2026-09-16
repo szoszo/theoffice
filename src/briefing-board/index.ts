@@ -69,7 +69,11 @@ export interface UpsertArgs {
   content: string;
   /** SOURCE-READ time (unix seconds) — when the underlying data was actually gathered (provenance). */
   as_of: number;
-  max_age_sec?: number;
+  /**
+   * Freshness contract in seconds. OMIT the field to KEEP whatever is stored (a partial update must not
+   * erode the guard — see upsertSection); send an explicit `null` to clear it back to DEFAULT_MAX_AGE_SEC.
+   */
+  max_age_sec?: number | null;
   status?: SectionStatus;
 }
 
@@ -96,15 +100,36 @@ export function upsertSection(a: UpsertArgs): UpsertResult {
   if (HEALTH_DENY_RX.test(deburr(a.content))) {
     return { ok: false, code: 422, error: "content looks like health data — the briefing board is shared and never carries health; keep it on the private health path" };
   }
+  // GUARD EROSION (fixed 2026-09-16, found by marveen, cause traced here): this used to bind
+  // `a.max_age_sec ?? null` straight into `max_age_sec=excluded.max_age_sec`, so a writer that simply
+  // STOPPED SENDING the field silently overwrote a deliberately-set contract with NULL on its very next
+  // write. The section then fell back to the 6h default with nobody deciding that and nobody able to see
+  // it. Observed live: finance carried 3600 through 09-09, then NULL 09-10..09-15 — not an edit, an
+  // omission. Same spirit as the status rule above: an omission must never quietly weaken a guard.
+  //   omitted  -> KEEP the stored value (NULL on first insert, so a brand-new section still gets the default)
+  //   null     -> explicit reset to the default
+  //   number   -> set it (validated below; a provided-but-bad value fails loud instead of landing in the DB)
+  const provided = a.max_age_sec !== undefined;
+  if (provided && a.max_age_sec !== null) {
+    const v = a.max_age_sec as unknown;
+    if (typeof v !== "number" || !Number.isInteger(v) || v <= 0) {
+      return {
+        ok: false,
+        code: 400,
+        error: `max_age_sec must be a positive integer number of seconds (got ${JSON.stringify(v)}); omit the field to keep the stored value, or send null to fall back to the ${DEFAULT_MAX_AGE_SEC}s default`,
+      };
+    }
+  }
   getDb()
     .prepare(
       `INSERT INTO briefing_board (section_key, agent, content, as_of, max_age_sec, status, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, unixepoch())
        ON CONFLICT(section_key) DO UPDATE SET
          agent=excluded.agent, content=excluded.content, as_of=excluded.as_of,
-         max_age_sec=excluded.max_age_sec, status=excluded.status, updated_at=unixepoch()`
+         max_age_sec=CASE WHEN ? = 1 THEN excluded.max_age_sec ELSE briefing_board.max_age_sec END,
+         status=excluded.status, updated_at=unixepoch()`
     )
-    .run(a.section_key, a.agent, a.content, a.as_of, a.max_age_sec ?? null, status);
+    .run(a.section_key, a.agent, a.content, a.as_of, a.max_age_sec ?? null, status, provided ? 1 : 0);
   return { ok: true };
 }
 
