@@ -1,7 +1,7 @@
 // Mission Control service worker — scope /mc/. Network-first so a new dashboard
 // deploy is always picked up; the app shell is cached only as an offline fallback.
 // API calls live at /api/* (outside this scope) and are never seen/cached here.
-const VERSION = "mc-4";
+const VERSION = "mc-5";
 const CACHE = "mc-" + VERSION;
 const SHELL = ["/mc/", "/mc/index.html", "/mc/app.js", "/mc/style.css",
                "/mc/manifest.webmanifest", "/mc/icon-192.png", "/mc/icon-512.png"];
