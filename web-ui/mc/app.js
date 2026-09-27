@@ -858,7 +858,7 @@ function obRenderDetail() {
               <button class="${tray === "batch" ? "active" : ""}" onclick="obSetTrayPref('batch')">🕐 Batch</button>
             </div>
             <button class="obdroplink" onclick="obDrop('${esc(c.id)}')">🗑 Drop</button>
-            <button class="obsave" onclick="obSaveComment('${esc(c.id)}')">Save</button>
+            <button class="obsave" onclick="obSaveComment('${esc(c.id)}', this)">Save</button>
           </div>
         </div>`}
       </div>
@@ -882,16 +882,24 @@ window.obInsertOpt = (btn) => {
   if (ta) ta.value = (ta.value ? ta.value + "\n" : "") + btn.textContent;
 };
 window.obSetTrayPref = (t) => { window._obTray = t; obRenderDetail(); };
-window.obSaveComment = async (id) => {
-  const ta = document.getElementById("ob-comment-text");
-  const text = ((ta && ta.value) || "").trim();
-  if (!text) return;
-  const tray = window._obTray || "batch";
-  await post(`/api/owner-cards/${encodeURIComponent(id)}/comments`, { author: "szoszo", text, tray });
-  const full = await api(`/api/owner-cards/${encodeURIComponent(id)}`);
-  window._obDetailCache[id] = full;
-  obRenderDetail();
-  if (CURRENT_TAB === "board") showTab("board");
+window.obSaveComment = async (id, btn) => {
+  // guard against a double-tap firing two click events before the button re-renders disabled —
+  // set this synchronously, before the first await, so a second call (however close) sees it.
+  if (btn && btn.disabled) return;
+  if (btn) btn.disabled = true;
+  try {
+    const ta = document.getElementById("ob-comment-text");
+    const text = ((ta && ta.value) || "").trim();
+    if (!text) return;
+    const tray = window._obTray || "batch";
+    await post(`/api/owner-cards/${encodeURIComponent(id)}/comments`, { author: "szoszo", text, tray });
+    const full = await api(`/api/owner-cards/${encodeURIComponent(id)}`);
+    window._obDetailCache[id] = full;
+    obRenderDetail();
+    if (CURRENT_TAB === "board") showTab("board");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 };
 window.obDrop = async (id) => {
   const note = prompt("Optional note for the drop:") || "";
