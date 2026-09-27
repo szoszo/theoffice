@@ -895,6 +895,10 @@ window.obSaveComment = async (id, btn) => {
     await post(`/api/owner-cards/${encodeURIComponent(id)}/comments`, { author: "szoszo", text, tray });
     const full = await api(`/api/owner-cards/${encodeURIComponent(id)}`);
     window._obDetailCache[id] = full;
+    // visible confirmation before the composer clears and the thread refreshes out from under it —
+    // otherwise a fast save gives no feedback that it actually landed.
+    if (btn) { btn.textContent = "Saved ✓"; btn.classList.add("obsaved"); }
+    await new Promise((r) => setTimeout(r, 700));
     obRenderDetail();
     if (CURRENT_TAB === "board") showTab("board");
   } finally {
