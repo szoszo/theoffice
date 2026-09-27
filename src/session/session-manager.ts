@@ -70,8 +70,23 @@ export function startDeliverer(cfg: EngineConfig): () => void {
           // alarm). It has no session and never will, so leaving it queued parks it FOREVER at a low id.
           // listQueued's fleet-wide LIMIT window is id-ordered, so a pile of these permanently fills the
           // window and starves every real agent: the 2026-08-24 fleet freeze was 51 such rows accumulated
-          // since Aug 4 pushing the window ceiling to id 15267 while the lowest real item was 15268 — every
-          // agent sat exactly one slot outside the window, attempts=0 all day. Dead-letter it so it leaves
+          // since Aug 4 pushing the window ceiling to id 15267 while the lowest real item was 15268.
+          // every agent sat exactly one slot outside the window, attempts=0 all day.
+          // "EVERY AGENT" WAS CHALLENGED 2026-09-22 AND RE-ESTABLISHED — keep it, and keep this reasoning,
+          // because the obvious measurement says otherwise. cfo first measured first-delivery-of-day per agent
+          // and found marveen served from 08:53 while six others waited until 20:09-20:24, i.e. 6 of 7. That
+          // comparison MERGES SOURCES. Partitioned by source: marveen's first BUS row was 20:19:17, in the same
+          // batch as everyone else, and NON-CHANNEL DELIVERIES TO ANY AGENT BEFORE 20:00 THAT DAY: ZERO.
+          // marveen looked served because all ten of his pre-20:00 rows are source='channel', and channel sorts
+          // AHEAD of the clog by design (listQueued, queue/index.ts:50). He had no privileged lane — he had
+          // owner traffic, and owner traffic was never in the blocked region. So it was 7 of 7 within the
+          // bus/scheduler partition, which is the partition this window governs.
+          // THE SAME FACT ANSWERS THE ID PUZZLE: a LOWER id (15271, dwight, bus) starved while a HIGHER one
+          // (15290, marveen, channel) was served, which looks like the ceiling model failing. It is not —
+          // SOURCE DOMINATES ID in the ordering, so the ceiling is real and operates within each source class.
+          // ALSO: this dead-letter did NOT end the incident. Six of seven agents unblocked BEFORE the commit
+          // existed (dwight 20:09:57, four at 20:19:19-26; commit 20:21:48), and a commit to src/ cannot take
+          // effect without a build and restart. It PREVENTS recurrence. What released it is not recorded.
           // the queue; a genuinely misrouted OWNER (source='channel') message is still caught separately by
           // the owner-delivery watchdog's state-observer.
           if (!rosterKnown) continue; // roster unreadable this tick -> can't classify -> leave queued
