@@ -5,6 +5,7 @@ import { deliverPendingSetupNotices } from "./web/setup-notices.js";
 import { startSlackIngest } from "./channel/slack-ingest.js";
 import { startSlackSender } from "./channel/slack-send.js";
 import { startScheduler } from "./scheduler/index.js";
+import { startOwnerBoardBatch } from "./web/owner-cards.js";
 import { startBus } from "./bus/index.js";
 import { startServer } from "./web/server.js";
 import { startAuthWatchdog } from "./web/auth-watchdog.js";
@@ -62,6 +63,9 @@ async function main(): Promise<void> {
     logger.warn("OFFICE_SCHEDULER_PAUSED set — scheduler/heartbeats NOT started (incident mode)");
   else
     stops.push(startScheduler(cfg));
+  // Owner Board batch send (spec §5): engine-timer, NOT a scheduled task — a scheduled task would wake
+  // an agent (tokens) just to check whether anything is due.
+  stops.push(startOwnerBoardBatch(cfg));
   if (process.env.OFFICE_BUS_PAUSED)
     logger.warn("OFFICE_BUS_PAUSED set — inter-agent bus NOT started (incident mode)");
   else

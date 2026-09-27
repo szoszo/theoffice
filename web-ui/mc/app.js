@@ -251,7 +251,7 @@ function renderStrip() {
 
 // ---------------- tabs ----------------
 const TAB_DEFS = [
-  ["agents", "Agents"], ["memory", "Memory"], ["kanban", "Kanban"], ["schedules", "Schedules"],
+  ["agents", "Agents"], ["memory", "Memory"], ["kanban", "Kanban"], ["board", "Board"], ["schedules", "Schedules"],
   ["queue", "Queue"], ["messages", "Messages"], ["usage", "Usage"], ["logs", "Logs"], ["update", "Update"],
 ];
 function tabBadge(id) {
@@ -392,6 +392,62 @@ const VIEWS = {
         <input id="mem-q" class="search" type="text" placeholder="search memories…" />
       </div>
       <div class="panelcard" id="mem-list"></div>`;
+  },
+
+  async board() {
+    const showAll = !!window._obShowAll;
+    const cards = await api("/api/owner-cards" + (showAll ? "?all=1" : ""));
+    const projects = [...new Set(cards.map((c) => c.project).filter(Boolean))].sort();
+    const activeProject = window._obProject || "";
+    const filtered = activeProject ? cards.filter((c) => c.project === activeProject) : cards;
+
+    // "Send now (N)" needs the unsent-tray-now count; only answered/dropped cards can carry one
+    // (open has none yet, sent/closed can't by construction — a comment on either reopens to answered).
+    const countable = filtered.filter((c) => c.status === "answered" || c.status === "dropped");
+    const details = await Promise.all(countable.map((c) => api(`/api/owner-cards/${encodeURIComponent(c.id)}`)));
+    window._obDetailCache = window._obDetailCache || {};
+    details.forEach((d) => { window._obDetailCache[d.card.id] = d; });
+    const unsentNow = details.reduce((s, d) => s + d.comments.filter((cm) => cm.tray === "now" && !cm.sent_at).length, 0);
+    const unsentAgents = new Set(
+      details.filter((d) => d.comments.some((cm) => cm.tray === "now" && !cm.sent_at)).map((d) => d.card.agent)
+    ).size;
+
+    const needsYou = filtered.filter((c) => c.status === "open");
+    const answered = filtered.filter((c) => c.status === "answered");
+    const done = filtered.filter((c) => ["sent", "closed", "dropped"].includes(c.status));
+
+    const obCard = (c) => `<div class="obcard" onclick="obOpen('${esc(c.id)}')">
+        <span class="obk">${OB_KIND_ICON[c.kind] || ""}</span><span class="obt">${esc(c.title)}</span>
+        ${c.project ? `<span class="obp">${esc(c.project)}</span>` : ""}
+        ${c.body ? `<div class="obb">${esc(c.body)}</div>` : ""}
+        <div class="obmeta"><span class="coin-s" style="background:${colorFor(c.agent)}">${esc(initialOf(nm(c.agent)))}</span>
+          <span>${esc(nm(c.agent))}</span><span>· ${ago(c.created_at)}</span></div>
+      </div>`;
+    const obCol = (label, list, extraBtn) => `<div class="obcol">
+        <div class="obcolhead"><span>${label} <span class="cnt">${list.length}</span></span>${extraBtn || ""}</div>
+        ${list.length ? list.map(obCard).join("") : `<div class="obempty">nothing here</div>`}
+      </div>`;
+    // Phone width: stack, Needs you first, Done collapsed by default (details/summary — no JS needed to toggle).
+    const doneInner = `<span>Done <span class="cnt">${done.length}</span></span>${`<button onclick="obToggleAll()">${showAll ? "Last 7d" : "Show all"}</button>`}`;
+    const doneBody = done.length ? done.map(obCard).join("") : `<div class="obempty">nothing here</div>`;
+    const obDoneCol = window.innerWidth < 700
+      ? `<details class="obcol"><summary class="obcolhead" style="cursor:pointer;list-style:none">${doneInner}</summary>${doneBody}</details>`
+      : `<div class="obcol"><div class="obcolhead">${doneInner}</div>${doneBody}</div>`;
+
+    setTimeout(() => { if (OB_OPEN_ID) obRenderDetail(); }, 0);
+
+    return `<div class="obtopbar">
+        <select onchange="obSetProject(this.value)">
+          <option value="">All projects</option>
+          ${projects.map((p) => `<option value="${esc(p)}" ${activeProject === p ? "selected" : ""}>${esc(p)}</option>`).join("")}
+        </select>
+        <button class="obsend" ${unsentNow === 0 ? "disabled" : ""} onclick="obSendNow(${unsentNow}, ${unsentAgents})">Send now (${unsentNow})</button>
+      </div>
+      <div class="obgrid">
+        ${obCol("Needs you", needsYou)}
+        ${obCol("Answered, waiting to send", answered)}
+        ${obDoneCol}
+      </div>`;
   },
 
   async kanban() {
@@ -748,6 +804,104 @@ window.emergencyRestart = async (btn) => {
   }
 };
 window.moveCard = async (id, sel) => { await post(`/api/kanban/${encodeURIComponent(id)}/status`, { status: sel.value }); await showTab("kanban"); renderStrip(); renderTabs(); };
+
+// ---------------- Owner Board ----------------
+const OB_KIND_ICON = { question: "❓", task: "✅", project: "📁", fyi: "ℹ️" };
+let OB_OPEN_ID = null;
+
+/** escape first, then linkify — never render HTML from the DB. Mirrors src/web/owner-cards.ts renderText(). */
+function obRenderText(s) {
+  return esc(s).replace(/(https?:\/\/[^\s<]+)/g, (m) => `<a href="${m}" target="_blank" rel="noopener">${m}</a>`);
+}
+
+function obRenderDetail() {
+  const id = OB_OPEN_ID;
+  if (!id) return;
+  const data = window._obDetailCache && window._obDetailCache[id];
+  if (!data) return;
+  const { card: c, comments } = data;
+  let root = document.getElementById("ob-detail-root");
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "ob-detail-root";
+    document.body.appendChild(root);
+  }
+  const msg = (cm) => `<div class="obmsg ${cm.author === "szoszo" ? "owner" : ""}">
+      <div class="obma"><b>${esc(cm.author === "szoszo" ? "Szoszo" : nm(cm.author))}</b><span>${ago(cm.created_at)}</span>
+        ${cm.tray ? `<span class="obtray">${esc(cm.tray)}${cm.sent_at ? " · sent" : ""}</span>` : ""}</div>
+      <div class="obmtext">${obRenderText(cm.text)}</div>
+    </div>`;
+  let opts = [];
+  try { opts = c.options ? JSON.parse(c.options) : []; } catch { opts = []; }
+  const tray = window._obTray || "batch";
+  root.innerHTML = `<div class="obdetail-backdrop" onclick="if(event.target===this) obCloseDetail()">
+      <div class="obdetail">
+        <div class="obdetail-head">
+          <div class="obdt"><div class="obdtitle">${OB_KIND_ICON[c.kind] || ""} ${esc(c.title)}</div>
+            <div class="obdmeta">${esc(nm(c.agent))}${c.project ? " · " + esc(c.project) : ""} · ${esc(c.status)}</div></div>
+          <button class="obdetail-close" onclick="obCloseDetail()">&times;</button>
+        </div>
+        <div class="obdetail-body"><div class="obthread">
+          ${c.body ? `<div class="obmsg"><div class="obma"><b>${esc(nm(c.agent))}</b></div><div class="obmtext">${obRenderText(c.body)}</div></div>` : ""}
+          ${comments.map(msg).join("") || `<div class="obempty">no comments yet</div>`}
+        </div></div>
+        ${c.status === "dropped" ? "" : `<div class="obcomposer">
+          ${opts.length ? `<div class="obopts">${opts.map((o) => `<button onclick="obInsertOpt(this)">${esc(o)}</button>`).join("")}</div>` : ""}
+          <textarea id="ob-comment-text" placeholder="Write an answer…"></textarea>
+          <div class="obcomposer-row">
+            <div class="obtraytoggle">
+              <button class="${tray === "now" ? "active" : ""}" onclick="obSetTrayPref('now')">⚡ Now</button>
+              <button class="${tray === "batch" ? "active" : ""}" onclick="obSetTrayPref('batch')">🕐 Batch</button>
+            </div>
+            <button class="obdroplink" onclick="obDrop('${esc(c.id)}')">🗑 Drop</button>
+            <button class="obsave" onclick="obSaveComment('${esc(c.id)}')">Save</button>
+          </div>
+        </div>`}
+      </div>
+    </div>`;
+}
+
+window.obOpen = async (id) => {
+  OB_OPEN_ID = id;
+  const full = await api(`/api/owner-cards/${encodeURIComponent(id)}`);
+  window._obDetailCache = window._obDetailCache || {};
+  window._obDetailCache[id] = full;
+  obRenderDetail();
+};
+window.obCloseDetail = () => {
+  OB_OPEN_ID = null;
+  const el = document.getElementById("ob-detail-root");
+  if (el) el.remove();
+};
+window.obInsertOpt = (btn) => {
+  const ta = document.getElementById("ob-comment-text");
+  if (ta) ta.value = (ta.value ? ta.value + "\n" : "") + btn.textContent;
+};
+window.obSetTrayPref = (t) => { window._obTray = t; obRenderDetail(); };
+window.obSaveComment = async (id) => {
+  const ta = document.getElementById("ob-comment-text");
+  const text = ((ta && ta.value) || "").trim();
+  if (!text) return;
+  const tray = window._obTray || "batch";
+  await post(`/api/owner-cards/${encodeURIComponent(id)}/comments`, { author: "szoszo", text, tray });
+  const full = await api(`/api/owner-cards/${encodeURIComponent(id)}`);
+  window._obDetailCache[id] = full;
+  obRenderDetail();
+  if (CURRENT_TAB === "board") showTab("board");
+};
+window.obDrop = async (id) => {
+  const note = prompt("Optional note for the drop:") || "";
+  await post(`/api/owner-cards/${encodeURIComponent(id)}/drop`, { note });
+  obCloseDetail();
+  if (CURRENT_TAB === "board") showTab("board");
+};
+window.obSetProject = (v) => { window._obProject = v; showTab("board"); };
+window.obToggleAll = () => { window._obShowAll = !window._obShowAll; showTab("board"); };
+window.obSendNow = async (n, agents) => {
+  if (!confirm(`Send ${n} answers to ${agents} agents?`)) return;
+  await post("/api/owner-cards/send", { tray: "now" });
+  await showTab("board");
+};
 window.doUpdate = async (btn) => {
   if (!confirm("Update now? The dashboard rebuilds and briefly restarts — your agents keep running.")) return;
   btn.disabled = true; btn.textContent = "Updating… (~30s)";

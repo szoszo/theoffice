@@ -124,6 +124,41 @@ export const MIGRATIONS: Migration[] = [
             updated_at  INTEGER NOT NULL DEFAULT (unixepoch())
           );`,
   },
+  {
+    version: 8,
+    name: "owner_cards",
+    // Owner Board v1.1 (spec: tenant/agents/marveen/OWNER-BOARD-SPEC.md, owner GO 2026-09-27). A board only
+    // the owner uses: agents post short cards, he answers via a comment thread and picks a tray (now/batch)
+    // per answer. New tables -> migration-only (Model A), never SCHEMA_SQL. Separate from kanban_cards by
+    // design (hard constraint in the spec): no FK, no shared endpoints, the migration below only READS it.
+    sql: `CREATE TABLE owner_cards (
+            id           TEXT PRIMARY KEY,
+            kind         TEXT NOT NULL CHECK (kind IN ('question','task','project','fyi')),
+            agent        TEXT NOT NULL,
+            project      TEXT,
+            title        TEXT NOT NULL,
+            body         TEXT,
+            options      TEXT,
+            status       TEXT NOT NULL DEFAULT 'open'
+                         CHECK (status IN ('open','answered','sent','closed','dropped')),
+            closed_via   TEXT CHECK (closed_via IN ('board','slack','agent','kanban')),
+            source_kanban_id TEXT UNIQUE,
+            created_at   INTEGER NOT NULL DEFAULT (unixepoch()),
+            updated_at   INTEGER NOT NULL DEFAULT (unixepoch())
+          );
+          CREATE INDEX idx_owner_cards_status ON owner_cards(status);
+          CREATE TABLE owner_card_comments (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            card_id     TEXT NOT NULL REFERENCES owner_cards(id),
+            author      TEXT NOT NULL,
+            text        TEXT NOT NULL,
+            tray        TEXT CHECK (tray IN ('now','batch')),
+            sent_at     INTEGER,
+            created_at  INTEGER NOT NULL DEFAULT (unixepoch())
+          );
+          CREATE INDEX idx_occ_card ON owner_card_comments(card_id);
+          CREATE INDEX idx_occ_unsent ON owner_card_comments(tray, sent_at);`,
+  },
 ];
 
 /** Highest known schema version (the baseline, or the max migration version). */

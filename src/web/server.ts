@@ -82,6 +82,16 @@ function contextPctFromTranscript(agentDir: string): number | null {
 import { isKnownRuntime, listRuntimes, runtimeFor, DEFAULT_RUNTIME } from "../session/runtime.js";
 import { getOrCreateToken, checkBearer } from "./auth.js";
 import { readBoard, upsertSection } from "../briefing-board/index.js";
+import {
+  createCard,
+  getCard,
+  listCards,
+  addComment,
+  patchComment,
+  dropCard,
+  closeCard,
+  sendTray,
+} from "./owner-cards.js";
 import { checkDoneEvidence } from "./kanban-evidence.js";
 import { log } from "../logger.js";
 
@@ -530,7 +540,18 @@ async function handleApi(
       return json(res, 400, { error: "section_key, agent, content, as_of (source-read unix seconds) required" });
     }
     const r = upsertSection({ section_key: b.section_key, agent: b.agent, content: b.content, as_of: b.as_of, max_age_sec: b.max_age_sec, status: b.status });
-    if (!r.ok) return json(res, r.code ?? 400, { error: r.error });
+    if (!r.ok) {
+      // LOG THE REFUSAL (dwight, 2026-09-22). A refused board write used to leave NO trace anywhere, four ways
+      // over: this handler did not log it, four of six writers catch the exception into a WARN nobody reads, and
+      // briefing_board has section_key as PRIMARY KEY so the next post overwrites the row with no history table.
+      // That makes both failure directions unmeasurable: a health leak is invisible once overwritten, and a
+      // FALSE-BLOCK is indistinguishable from an agent that never ran (which is what made cycle 26
+      // unresolvable). The deny cannot be evaluated by auditing the board afterwards - there is nothing to
+      // audit - so it has to be captured AT POST TIME. This line is that capture.
+      logger.warn({ section_key: b.section_key, agent: b.agent, code: r.code, reason: r.error },
+        "briefing-board write REFUSED");
+      return json(res, r.code ?? 400, { error: r.error });
+    }
     return json(res, 200, { ok: true, section_key: b.section_key });
   }
 
@@ -777,6 +798,82 @@ async function handleApi(
     const info = db.prepare(`UPDATE memories SET category=? WHERE id=?`).run(b.category, id);
     if (info.changes === 0) return json(res, 404, { error: "memory not found", id });
     return json(res, 200, { ok: true, id, category: b.category });
+  }
+
+  // ==================== Owner Board (spec: tenant/agents/marveen/OWNER-BOARD-SPEC.md v1.1) ====================
+  // Fully separate from kanban_cards/kanban routes by design (hard constraint) — own table, own endpoints.
+
+  // POST /api/owner-cards — create a card
+  if (path === "/api/owner-cards" && m === "POST") {
+    const raw = await readBody(req, res); if (raw === null) return;
+    const b = parseJson(raw) ?? {};
+    const knownAgents = loadAgents(cfg).map((a) => a.id);
+    const r = createCard(b as unknown as Parameters<typeof createCard>[0], knownAgents);
+    if (!r.ok) return json(res, r.code ?? 400, { error: r.error });
+    return json(res, 200, { id: r.id });
+  }
+
+  // GET /api/owner-cards?status=&all=1
+  if (path === "/api/owner-cards" && m === "GET") {
+    const status = url.searchParams.get("status");
+    const all = url.searchParams.get("all") === "1";
+    return json(res, 200, listCards({ status, all }));
+  }
+
+  // GET /api/owner-cards/<id> — card + all comments, oldest first
+  const ocGet = path.match(/^\/api\/owner-cards\/([^/]+)$/);
+  if (ocGet && m === "GET") {
+    const found = getCard(decodeURIComponent(ocGet[1]!));
+    if (!found) return json(res, 404, { error: "card not found" });
+    return json(res, 200, found);
+  }
+
+  // POST /api/owner-cards/<id>/comments — owner: {author:'szoszo',text,tray} · agent: {author,text,needs_you?}
+  const ocComment = path.match(/^\/api\/owner-cards\/([^/]+)\/comments$/);
+  if (ocComment && m === "POST") {
+    const raw = await readBody(req, res); if (raw === null) return;
+    const b = parseJson(raw) ?? {};
+    const r = addComment(decodeURIComponent(ocComment[1]!), b as unknown as Parameters<typeof addComment>[1]);
+    if (!r.ok) return json(res, r.code ?? 400, { error: r.error });
+    return json(res, 200, { id: r.id });
+  }
+
+  // PATCH /api/owner-cards/comments/<cid> {text?, tray?} — owner only, only while sent_at IS NULL
+  const ocPatch = path.match(/^\/api\/owner-cards\/comments\/(\d+)$/);
+  if (ocPatch && m === "PATCH") {
+    const raw = await readBody(req, res); if (raw === null) return;
+    const b = parseJson(raw) ?? {};
+    const r = patchComment(Number(ocPatch[1]), b);
+    if (!r.ok) return json(res, r.code ?? 400, { error: r.error });
+    return json(res, 200, { ok: true });
+  }
+
+  // POST /api/owner-cards/<id>/drop {note?}
+  const ocDrop = path.match(/^\/api\/owner-cards\/([^/]+)\/drop$/);
+  if (ocDrop && m === "POST") {
+    const raw = await readBody(req, res); if (raw === null) return;
+    const b = parseJson(raw) ?? {};
+    const r = dropCard(decodeURIComponent(ocDrop[1]!), b);
+    if (!r.ok) return json(res, r.code ?? 400, { error: r.error });
+    return json(res, 200, { ok: true });
+  }
+
+  // POST /api/owner-cards/<id>/close {via:'slack'|'agent', note?}
+  const ocClose = path.match(/^\/api\/owner-cards\/([^/]+)\/close$/);
+  if (ocClose && m === "POST") {
+    const raw = await readBody(req, res); if (raw === null) return;
+    const b = parseJson(raw) ?? {};
+    const r = closeCard(decodeURIComponent(ocClose[1]!), b as unknown as Parameters<typeof closeCard>[1]);
+    if (!r.ok) return json(res, r.code ?? 400, { error: r.error });
+    return json(res, 200, { ok: true });
+  }
+
+  // POST /api/owner-cards/send {tray:'now'|'batch'}
+  if (path === "/api/owner-cards/send" && m === "POST") {
+    const raw = await readBody(req, res); if (raw === null) return;
+    const b = parseJson(raw) ?? {};
+    if (b?.tray !== "now" && b?.tray !== "batch") return json(res, 400, { error: "tray must be 'now' or 'batch'" });
+    return json(res, 200, sendTray(b.tray));
   }
 
   return json(res, 404, { error: "not found" });

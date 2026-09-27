@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# office-card — the Owner Board CLI for agents (spec: tenant/agents/marveen/OWNER-BOARD-SPEC.md §7).
+# Positional args only, NO flags (office-say lesson: `--help` gets posted to Slack literally).
+#
+#   office-card new <kind> "<title>" "<body>" ["<project>"] ["opt1|opt2|opt3"]   -> prints the card id
+#   office-card comment <id> "<text>" [ask]                                     -> agent comment
+#   office-card close <id> slack|agent                                         -> he answered elsewhere
+set -euo pipefail
+
+AGENT="${OFFICE_AGENT_ID:?OFFICE_AGENT_ID not set (run inside an agent session)}"
+TENANT="${OFFICE_TENANT_ROOT:?OFFICE_TENANT_ROOT not set}"
+PORT="${OFFICE_PORT:-3430}"
+TOKEN="$(cat "$TENANT/store/.dashboard-token")"
+
+usage() {
+  echo 'usage: office-card new <kind> "<title>" "<body>" ["<project>"] ["opt1|opt2|opt3"]' >&2
+  echo '       office-card comment <id> "<text>" [ask]' >&2
+  echo '       office-card close <id> slack|agent' >&2
+  exit 1
+}
+
+CMD="${1:-}"
+[ -n "$CMD" ] || usage
+shift
+
+case "$CMD" in
+  new)
+    KIND="${1:?kind required}"
+    TITLE="${2:?title required}"
+    BODY="${3:-}"
+    PROJECT="${4:-}"
+    OPTS="${5:-}"
+    python3 - "$AGENT" "$TOKEN" "$PORT" "$KIND" "$TITLE" "$BODY" "$PROJECT" "$OPTS" <<'PY'
+import sys, json, urllib.request, urllib.error
+agent, token, port, kind, title, body, project, opts = sys.argv[1:9]
+payload = {"agent": agent, "kind": kind, "title": title}
+if body: payload["body"] = body
+if project: payload["project"] = project
+if opts: payload["options"] = opts.split("|")
+data = json.dumps(payload).encode()
+req = urllib.request.Request(
+    f"http://127.0.0.1:{port}/api/owner-cards", data=data,
+    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+)
+try:
+    resp = json.loads(urllib.request.urlopen(req, timeout=10).read())
+    print(resp.get("id", ""))
+except urllib.error.HTTPError as e:
+    sys.stderr.write(e.read().decode() + "\n")
+    sys.exit(1)
+PY
+    ;;
+
+  comment)
+    ID="${1:?card id required}"
+    TEXT="${2:?text required}"
+    ASK="${3:-}"
+    python3 - "$AGENT" "$TOKEN" "$PORT" "$ID" "$TEXT" "$ASK" <<'PY'
+import sys, json, urllib.request, urllib.error
+agent, token, port, cid, text, ask = sys.argv[1:7]
+payload = {"author": agent, "text": text}
+if ask == "ask": payload["needs_you"] = 1
+data = json.dumps(payload).encode()
+req = urllib.request.Request(
+    f"http://127.0.0.1:{port}/api/owner-cards/{cid}/comments", data=data,
+    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+)
+try:
+    resp = json.loads(urllib.request.urlopen(req, timeout=10).read())
+    print(resp.get("id", ""))
+except urllib.error.HTTPError as e:
+    sys.stderr.write(e.read().decode() + "\n")
+    sys.exit(1)
+PY
+    ;;
+
+  close)
+    ID="${1:?card id required}"
+    VIA="${2:?slack or agent required}"
+    if [ "$VIA" != "slack" ] && [ "$VIA" != "agent" ]; then usage; fi
+    python3 - "$TOKEN" "$PORT" "$ID" "$VIA" <<'PY'
+import sys, json, urllib.request, urllib.error
+token, port, cid, via = sys.argv[1:5]
+data = json.dumps({"via": via}).encode()
+req = urllib.request.Request(
+    f"http://127.0.0.1:{port}/api/owner-cards/{cid}/close", data=data,
+    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+)
+try:
+    urllib.request.urlopen(req, timeout=10).read()
+    print("ok")
+except urllib.error.HTTPError as e:
+    sys.stderr.write(e.read().decode() + "\n")
+    sys.exit(1)
+PY
+    ;;
+
+  *)
+    usage
+    ;;
+esac
