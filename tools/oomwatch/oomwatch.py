@@ -60,14 +60,51 @@ RESYNC_TIMEOUT_S = 3600                             # worst-case oom re-read bou
 # PROOF it's sticky: unloading the model dropped ollama resident 1720->430 MiB while container
 # swap held 1135->1134 MiB. So the honest post-#1 steady is ~1.1 GB, NOT 0.5 GB.
 #   RE-DERIVED 2026-09-07 (Darryl, marveen-approved 14601): the steady band CREPT UP as the agent
-#   fleet grew to ~10 long-lived sessions — cold-page accumulation (nightly reset clears context but
-#   did not re-exec the process), so the observed band moved to ~2000-2238 MiB. At 2048 the tripwire
+#   fleet grew to ~10 long-lived sessions — cold-page accumulation, so the observed band moved to
+#   ~2000-2238 MiB.
+#   *** THE PARENTHETICAL HERE WAS FALSE AND IS DELETED (darryl, 2026-09-27 06:50). *** It read
+#   "(nightly reset clears context but did not re-exec the process)". Measured while chasing cfo's
+#   unexplained 05:30 item: THERE IS NO NIGHTLY RESET. `cleanreset` exists only as an API action
+#   spawning clean_reset.py, whose own docstring calls it the dashboard "Handoff + Reset" BUTTON.
+#   Zero cron entries, zero systemd timers, zero task-configs reference it, and its log records 15
+#   invocations ever — none between 05:00 and 06:00, last one 2026-09-26 15:44. Six agent processes
+#   are at ELEVEN DAYS uptime. So context accumulates too, not just cold pages, and the band creep has
+#   a larger cause than the comment claimed. Card e73caff6. This matters here because the deleted
+#   clause was the reason given for expecting the baseline to "drop back down" once a re-exec landed —
+#   an expectation resting on a scheduled reset that does not exist. At 2048 the tripwire
 #   sat INSIDE that band and fired daily false in-band crossings (2026-09-06/07). Raised to 2500 =
 #   a few hundred MiB above the ~2165-2238 band, so routine fleet breathing won't trip it while a
 #   genuine runaway still alarms, and it still leaves ~1.6 GB runway to the 4 GB host-backed ceiling.
 #   The durable fix (re-exec agents on the nightly reset, in progress) will drop the baseline back
 #   down; revisit this threshold downward once that lands. Heartbeats never latch (gradual growth
 #   above 2500 keeps re-alerting), and the (B) noise-dedup still suppresses flat-repeat heartbeats.
+#   *** THE PARAGRAPH ABOVE IS FALSIFIED BY THIS ALARM'S OWN HISTORY (darryl, 2026-09-27). ***
+#   It claims 2500 is "a few hundred MiB above the ~2165-2238 band, so routine fleet breathing won't
+#   trip it while a genuine runaway still alarms." Measured across this alarm's 34 bus crossings,
+#   2026-08-18 .. 09-27:
+#       BEFORE the 2048->2500 raise:  n=18  min 2048  max 3730  MEDIAN 2103
+#       AFTER  the raise:             n=16  min 2508  max 3275  MEDIAN 2567
+#   Same crossing rate. The raise moved the threshold from inside one band to inside a HIGHER band,
+#   because the band moved with it: routine peaks are now 2500-2650 against a ~2124 baseline, and the
+#   genuine excursions are 2892 / 3275 / 3730.
+#   WHY THIS COMMENT MATTERS MORE THAN THE NUMBER: a reader who believes "routine breathing won't trip
+#   it" reads any crossing as a runaway and acts on that. A confidently wrong REASON ends the
+#   investigation and prescribes a remedy - which is the defect this tool exists to catch, sitting in
+#   its own explanation. Same class as the line below it asserting that shedding ollama "does NOT pull
+#   these pages back": the shed ran on 2026-09-27 and ~490 MiB came back.
+#   *** AND MY OWN "RAISE IT TO 2900" PROPOSAL IS FALSIFIED TOO, TWO HOURS AFTER I MADE IT. ***
+#   I had argued: routine peaks are 2500-2650, genuine excursions are 2892/3275/3730, so 2900 would sit
+#   above the band. Then 2026-09-27 06:25 crossed at 2862 and self-cleared to 2025 within six minutes.
+#   2862 is 30 MiB below the figure I had called the excursion floor, and it behaved exactly like the
+#   sawtooth. So PEAK HEIGHT DOES NOT SEPARATE AN EXCURSION FROM A SAWTOOTH - only PERSISTENCE does, and
+#   a third threshold raise would fail for the same reason the first two did. That is now measured
+#   rather than argued, and it is the strongest evidence 9e1d0a3d has.
+#   NOT CHANGING THE THRESHOLD HERE. Raising it a third time repeats the error. The fix is the TRIGGER,
+#   not the level - a level test cannot distinguish 3730 from a sawtooth crossing 2500 - and it is
+#   carded as 9e1d0a3d (sustained-breach: require the breach to PERSIST for N minutes). Capacity
+#   evidence, which is the actual driver (ten agents at 99% of an 8 GB cgroup), is on 04aec484 ->
+#   235d0c35. marveen's ruling (bus 18763): option B, and not at 04:00 on the axis that caused the
+#   2026-08-04 manual reboot.
 SWAP_HIGH_MIB = 2500
 # RE-ARM IS TIME-BASED, NOT LEVEL-BASED — this is the fix for the silent-guard defect. The old
 # design re-armed only when swap fell back under a CLEAR level sitting ~12 MiB under steady; if
@@ -183,7 +220,24 @@ def shed_ollama() -> str:
         return "shed ollama:%s FAILED (%s)" % (SHED_MODEL, ex)
 
 
+# WAKE_FROM IS NOT A ROUTABLE AGENT, AND THE READER IS TOLD TO REPLY TO IT (darryl, 2026-09-27).
+# `oomwatch` is not in GET /api/agents, so every alert this tool sends arrives with a `from` nobody can
+# answer -- and the harness's own footer instructs the recipient to "reply BACK TO THE SENDER". Doing
+# that creates a dead row: POST /api/messages validates that `to` is PRESENT, not ROUTABLE, returns a
+# success id, and the message reaches no one. 53 such rows to `oomwatch` already exist, all written by
+# me, and tonight's census found 316 across 16 names (card 4939942e).
+# Keeping `from: oomwatch` is deliberate -- it tells the reader WHICH tool fired, which a routable
+# sender name would destroy. So the fix is not the name, it is that the dead end must be STATED rather
+# than discovered: the alert now carries its own no-reply line and names a routable escalation target.
+NO_REPLY_LINE = (
+    "\n\nDO NOT REPLY TO THIS MESSAGE. `oomwatch` is a tool, not a roster agent -- a reply to it "
+    "returns a success id and reaches nobody. Act directly, or escalate to `marveen`."
+)
+
+
 def _post_bus(content: str, tag: str) -> None:
+    if NO_REPLY_LINE.strip() not in content:
+        content = content + NO_REPLY_LINE
     body = json.dumps({"from": WAKE_FROM, "to": WAKE_TO, "content": content}).encode()
     req = urllib.request.Request(
         _api_base() + "/api/messages", data=body,
@@ -228,7 +282,13 @@ def fire_swap(cur_mib: int, action_note: str, heartbeat_n: int) -> None:
         "(MemorySwapMax=0), so this growth is AGENT/misc pages — find it via per-process VmSwap in "
         "/proc/*/status. There is NO host swap cap (Szoszo ruled it out 08-04), so nothing stops "
         "container swap reaching the full host-backed 4 GB — the path that forced the manual reboot. "
-        "Shedding ollama frees RAM (relieves pressure) but does NOT pull these pages back, so if "
+        # CORRECTED 2026-09-27: this asserted "does NOT pull these pages back" as fact. MEASURED on
+        # 2026-09-27: the shed ran and swap fell 2519 -> 2028 MiB, ~490 MiB back. Whether the shed
+        # reclaimed it or something else did is NOT established - so the alert now reports the
+        # observation and declines the mechanism. An alarm that explains a mechanism wrongly is worse
+        # than one that explains nothing, because the reader acts on the explanation.
+        "Shedding ollama frees RAM (relieves pressure); whether it also returns swapped pages is NOT "
+        "established - on 2026-09-27 a shed coincided with ~490 MiB of swap returning, cause unknown. So if "
         "swap keeps climbing, escalate: something is leaking and needs a hard cap of its own."
     ) % (kind, cur_mib, SWAP_HIGH_MIB, avail, action_note)
     _post_bus(content, "swap-high %d MiB (hb#%d)" % (cur_mib, heartbeat_n))
