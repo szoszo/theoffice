@@ -267,6 +267,10 @@ function renderTabs() {
     const b = tabBadge(id);
     return `<button class="${CURRENT_TAB === id ? "active" : ""}" data-tab="${id}" onclick="showTab('${id}')">${label}${b > 0 ? `<span class="badge">${b}</span>` : ""}</button>`;
   }).join("");
+  // nav.tabs scrolls horizontally on narrow screens; without this the active tab (e.g. Board, well
+  // past the initial scroll position) can render clipped at the edge of the visible strip.
+  const activeBtn = $("#tabs").querySelector("button.active");
+  if (activeBtn) activeBtn.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
 async function showTab(name) {
