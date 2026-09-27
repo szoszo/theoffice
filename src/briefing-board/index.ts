@@ -49,9 +49,50 @@ function deburr(s: string): string {
  * "recept"/"kontroll", and the tech-overloaded "diagnose/diagnostic" (kept HU-only "diagnoz"). Added weight
  * + specialist + common-regimen terms (Toby H2). Non-exhaustive by nature (drug names, bare BP ratios) —
  * it is DEFENCE-IN-DEPTH behind the whitelist; the compose side cross-checks high-consequence sections.
+ *
+ * REWRITTEN 2026-09-22, BOTH DIRECTIONS, after Toby tested the one direction nobody had: THE PATTERN WAS
+ * ALREADY FALSE-BLOCKING ORDINARY SECTION COPY. 13 of 15 plausible strings were refused, including four real
+ * content shapes from that week. A 422 is a HARD REFUSAL, so the whole section is absent from the board - and a
+ * missing section is indistinguishable from an agent that did not run. THE FALSE-BLOCK IS THE MORE EXPENSIVE
+ * FAILURE, not the gap, and we optimised the cheap one for two days.
+ * FIXED FALSE-BLOCKS (each was live):
+ *   orvos|doktor|klinik  now carry a PLACE GUARD - Klinikak is a real M3 station, Orvosi utca and Doktor
+ *                        Sandor utca are real streets, and `car` publishes street names EVERY DAY.
+ *   lelet -> \blelet     `lelet` matched inside `felelet`.
+ *   bare weight / suly / \d+mg  DROPPED - blocked "total weight of the swag boxes" (toggl, live that week),
+ *                        "suly alatt", "300 mg caffeine". body_weight and testsuly still carry the real case.
+ * CLOSED GAP (Toby, five cycles, reported into a dead-lettered address so nobody heard it): the list was
+ * CLINICAL and the case that reaches a whitelisted section is A HUMAN EXPLAINING WHY SOMETHING DID NOT HAPPEN.
+ * Two threats, two vocabularies, one written. Real instance in cycle 22: "waking up sick".
+ * ANCHORING IS ASYMMETRIC ON PURPOSE (marveen) - DO NOT TIDY IT INTO UNIFORMITY:
+ *   HUNGARIAN stems  -> NO trailing \b (agglutinative: betegen, orvoshoz, korhazban must all hit)
+ *   ENGLISH literals -> \b REQUIRED   (`ill` inside bill/will/still/grill/chill; `flu` inside influx/fluid)
+ * DELIBERATELY STRICTER THAN THE AGREED SHORTLIST, because plain versions false-block on test:
+ *   headache needs has/had/with -> "this config is a headache" must pass
+ *   rough/lousy need a feel-verb -> "the drive is rough on that road" must pass (car section)
+ *   rosszul needs vagyok/van/volt/lett/erzem/erzi -> "rosszul mukodik a deploy" must pass
+ *   lazas excludes tempo|iram -> "lazas tempo" is an idiom for a busy week
+ * NOT ADDED, verified to false-block: cold ("4C, cold start" - weather carries it daily), a temperature,
+ *   dizzy ("dizzying number of invoices"), laid up ("car is laid up at the garage"), under the weather,
+ *   virus/infection (security sections).
+ * CLAUSE THAT OUTRANKS THE OTHER TWO (Toby): EVERY term, existing and new, is tested against a false-block
+ * corpus before it ships, and that corpus MUST contain Budapest street and station names.
+ * That corpus is the ENFORCEMENT of FLEET-RULES.md:46 Rule 3 (Szoszo, 2026-08-14, against
+ * over-classifying operational content as HR-private). Read the rule there, not here: a
+ * second copy of its wording is a second thing to go stale. Do not widen this regex
+ * without running index.test.ts.
+ *
+ * DO NOT add \b to the HU stems as a blanket cleanup. Matching runs on deburr()'d text, so a
+ * stem can sit inside an unrelated word (duplazas contains the fever stem - a real refusal of
+ * ordinary finance copy, Oscar 2026-09-24). A leading \b fixes that class but REMOVES matches,
+ * which is the leak direction, and Hungarian compounds put the health stem at the END of a word:
+ *   magasvernyomas, szivbeteg, belazasodott   <- all real, all health data, all mid-word
+ * So \b is safe ONLY for a stem that never appears as a compound tail, decided per stem and
+ * MEASURED against must-fire cases that include a PREFIXED form, not just the bare adjective.
+ * A must-fire set containing only word-initial forms cannot detect the leak a \b introduces.
  */
 const HEALTH_DENY_RX =
-  /(?:blood\s*pressure|vernyom|systol|diastol|szisztol|diasztol|mmhg|heart\s*rate|heart\s*attack|szivroham|szivritmus|\bmedic|gyogyszer|orvos|doktor|\bdoctor\b|korhaz|klinik|diagnoz|lelet|tunet|beteg|injekci|vervetel|vercukor|glucose|cholesterol|koleszterin|testsuly|body\s*weight|\bweight\b|\bsuly\b|\bbmi\b|cardiolog|kardiolog|\d+\s*mg\b|ramipril|bisoprolol|amlodipin|\bconcor\b)/;
+  /(?:blood\s*pressure|vernyom|systol|diastol|szisztol|diasztol|mmhg|heart\s*rate|heart\s*attack|szivroham|szivritmus|\bmedic|gyogyszer|(?:orvos|doktor|klinik)(?!(?:i|ai|ak|a)?(?:\s+\S+){0,2}\s*(?:utca|utcai|\but\b|uton|\bter\b|tere|teren|korut|metro|megallo|allomas|\bm[1-4]\b))|\bdoctor\b|korhaz|diagnoz|\blelet|tunet|beteg|injekci|vervetel|vercukor|glucose|cholesterol|koleszterin|testsuly|body\s*weight|\bbmi\b|cardiolog|kardiolog|ramipril|bisoprolol|amlodipin|\bconcor\b|\bsick\b|\bill\b(?!-)|\bunwell\b|\bmigraine|\bbedridden\b|\bflu\b|influenza|\billness\b|\bfever\b|feverish|\bnausea|vomit|diarrhoea|diarrhea|sore\s+throat|\bcough\b|coughing|antibiotic|(?:\bhas|\bhad|\bwith)\s+(?:a\s+)?(?:bad\s+|terrible\s+|awful\s+|slight\s+)?head\s?ache|(?:feel|feels|feeling|felt)[a-z\s]{0,12}\b(?:rough|lousy|poorly|dizzy)\b|szedul|hanyinger|fajdal|megfaz|influenzas|gyengelkedik|fejfaj|agynak\s+esett|hanyt|hasmenes|torokfaj|belazasod|\blazas(?!\s*(?:tempo|iram))|rosszul\s+(?:vagyok|van|volt|lett|erzem|erzi)|nem\s+erzi\s+jol)/;
 
 export interface BoardRow {
   section_key: string;
@@ -97,8 +138,12 @@ export function upsertSection(a: UpsertArgs): UpsertResult {
   const status: SectionStatus =
     a.status === undefined ? "ok" : (STATUSES as readonly string[]).includes(a.status) ? a.status : "error";
   // Health deny scans deburred CONTENT on EVERY section (defence-in-depth behind the whitelist).
-  if (HEALTH_DENY_RX.test(deburr(a.content))) {
-    return { ok: false, code: 422, error: "content looks like health data — the briefing board is shared and never carries health; keep it on the private health path" };
+  const hit = HEALTH_DENY_RX.exec(deburr(a.content));
+  if (hit) {
+    // NAME THE MATCHED TOKEN (Pam, 2026-09-22). "content looks like health data" tells the writer they are
+    // wrong without telling them WHICH WORD. At 07:10, five minutes before compose, the difference between
+    // naming `klinik` and not naming it is a one-word fix versus a dropped section.
+    return { ok: false, code: 422, error: `content looks like health data (matched: "${hit[0]}") — the briefing board is shared and never carries health; keep it on the private health path. If this is a false positive (a street name, a package weight), rephrase that token and re-post.` };
   }
   // GUARD EROSION (fixed 2026-09-16, found by marveen, cause traced here): this used to bind
   // `a.max_age_sec ?? null` straight into `max_age_sec=excluded.max_age_sec`, so a writer that simply
