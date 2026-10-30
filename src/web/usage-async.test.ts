@@ -42,7 +42,7 @@ describe("computeUsageAsync", () => {
     const p = computeUsageAsync([agent("/definitely/not/here")], 0);
     FakeWorker.last!.emit("error", Object.assign(new Error("cannot find module"), { code: "ERR_MODULE_NOT_FOUND" }));
     const r = await p;
-    expect(r).toEqual([{ id: "a", input: 0, output: 0, cacheRead: 0, cacheWrite: 0, turns: 0, tracked: true }]);
+    expect(r).toEqual([{ id: "a", input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0, turns: 0, tracked: true }]);
   });
 
   it("when even the inline fallback throws, the promise rejects instead of throwing inside an event callback", async () => {

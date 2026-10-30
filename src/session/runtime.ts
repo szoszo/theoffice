@@ -52,6 +52,8 @@ export interface Runtime {
    * such knob and the dashboard hides the control). Claude exposes five; codex and gemini none.
    */
   readonly efforts: readonly string[];
+  /** Optional caveat shown next to the effort control (e.g. gemini: only without a pinned model). */
+  readonly effortNote?: string;
 
   /** Launch this agent's tmux session. Returns true if a new session was created. */
   launch(cfg: EngineConfig, agent: AgentDef): boolean;
@@ -104,12 +106,14 @@ export function listRuntimes(): {
   label: string;
   models: readonly string[];
   efforts: readonly string[];
+  effortNote?: string;
 }[] {
   return [...registry.values()].map((r) => ({
     id: r.id,
     label: r.label,
     models: r.models,
     efforts: r.efforts,
+    ...(r.effortNote ? { effortNote: r.effortNote } : {}),
   }));
 }
 

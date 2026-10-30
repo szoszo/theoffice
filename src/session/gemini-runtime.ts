@@ -11,6 +11,9 @@ import { markDelivering, markDelivered, markFailed, requeue, requeueNoPenalty, M
 import { recordInbound } from "../memory/conversation.js";
 import type { Runtime, QueuedItem } from "./runtime.js";
 import { frameForDelivery } from "./delivery.js";
+import { readGeminiContext } from "./exec-context.js";
+import { createModelCatalog, parseAgyModels, runCli } from "./model-catalog.js";
+import { sessionToResume, saveSession, clearSession, recordUsage, usageFromGemini, alertConfigFailure, CONFIG_ERROR_RE } from "./exec-sessions.js";
 
 /**
  * Gemini runtime — drives an agent on Google's Antigravity CLI (`agy`), the successor to the Gemini CLI
@@ -41,6 +44,17 @@ const PRINT_TIMEOUT = "10m";
 // requeue (our kill, not the message's fault). Kept above PRINT_TIMEOUT so agy self-times-out first normally.
 const TURN_TIMEOUT_MS = 13 * 60_000;
 
+/** The agy JSON says it failed ({status:"ERROR", error}) with a message that can never succeed on retry. */
+export function geminiConfigError(stdout: string): string | null {
+  try {
+    const o = JSON.parse(stdout.trim());
+    if (o?.status === "ERROR" && typeof o.error === "string" && CONFIG_ERROR_RE.test(o.error)) return o.error;
+  } catch {
+    /* not JSON */
+  }
+  return null;
+}
+
 export type GeminiOutcome = "delivered" | "backoff" | "failed" | "requeue";
 
 /**
@@ -52,8 +66,11 @@ export function decideGeminiOutcome(o: {
   sawUsageLimit: boolean;
   attempts: number;
   maxAttempts?: number;
+  /** deterministic configuration error: fail now, retries cannot help */
+  configError?: boolean;
 }): GeminiOutcome {
   if (o.code === 0) return "delivered";
+  if (o.configError) return "failed";
   if (o.sawUsageLimit) return "backoff";
   return o.attempts >= (o.maxAttempts ?? MAX_DELIVERY_ATTEMPTS) ? "failed" : "requeue";
 }
@@ -120,11 +137,19 @@ export function deliverGeminiPrompt(cfg: EngineConfig, agent: AgentDef, item: Qu
   // Flags BEFORE the prompt value (Go flag parsing stops at the first non-flag arg). Model selection is
   // left to the agent's signed-in default unless agent.model overrides it. Unattended posture mirrors the
   // claude/codex paths: --dangerously-skip-permissions so the agent can office-say / git / write the vault.
-  const args = ["--dangerously-skip-permissions", "--print-timeout", PRINT_TIMEOUT];
+  // --output-format json: one JSON object on stdout with conversation_id + usage (verified live 2026-10-30).
+  const args = ["--dangerously-skip-permissions", "--print-timeout", PRINT_TIMEOUT, "--output-format", "json"];
   if (agent.model && agent.model !== "default") args.push("--model", agent.model);
+  // --effort only without a pinned model (see effortNote): agy refuses the combination with exit 1.
+  const pinned = agent.model && agent.model !== "default";
+  if (!pinned && agent.effort && geminiRuntime.efforts.includes(agent.effort)) args.push("--effort", agent.effort);
+  // Continuity: resume the agent's stored conversation (cleared by the context roll-over or a reset).
+  const resumeId = sessionToResume(agent.id, "gemini");
+  if (resumeId) args.push("--conversation", resumeId);
   args.push("--print", prompt);
 
   let sawUsageLimit = false;
+  let outBuf = "";
   const scan = (s: string) => {
     if (USAGE_LIMIT_RE.test(s)) sawUsageLimit = true;
   };
@@ -171,8 +196,10 @@ export function deliverGeminiPrompt(cfg: EngineConfig, agent: AgentDef, item: Qu
       logger.warn({ id: item.id, agent: agent.id, timeoutMin: TURN_TIMEOUT_MS / 60_000 }, "gemini turn watchdog timeout -> killed + requeued (no attempt charged)");
       return;
     }
-    const outcome = decideGeminiOutcome({ code, sawUsageLimit, attempts: item.attempts });
+    const configError = code === 0 ? null : geminiConfigError(outBuf);
+    const outcome = decideGeminiOutcome({ code, sawUsageLimit, attempts: item.attempts, configError: !!configError });
     if (outcome === "delivered") {
+      bookTurn(agent.id, outBuf);
       markDelivered(item.id);
       recordInbound(item.agent_id, item.reply_channel, item.prompt);
       logger.info({ id: item.id, agent: agent.id }, "gemini prompt delivered (clean exit)");
@@ -180,8 +207,15 @@ export function deliverGeminiPrompt(cfg: EngineConfig, agent: AgentDef, item: Qu
       cooldownUntil.set(agent.id, Date.now() + USAGE_BACKOFF_MS);
       requeueNoPenalty(item.id);
       logger.warn({ id: item.id, agent: agent.id, code, backoffMin: USAGE_BACKOFF_MS / 60_000 }, "gemini usage cap -> holding (no attempt charged)");
+    } else if (resumeId && outcome !== "failed") {
+      // A failed RESUME is most likely a stale/unknown conversation id: forget it so the retry starts a new
+      // conversation, and refund the attempt (the message is not at fault).
+      clearSession(agent.id);
+      requeueNoPenalty(item.id);
+      logger.warn({ id: item.id, agent: agent.id, code }, "gemini resume failed -> conversation reset, retrying fresh (no attempt charged)");
     } else if (outcome === "failed") {
-      markFailed(item.id, errMsg ?? `exit ${code}`);
+      markFailed(item.id, errMsg ?? configError ?? `exit ${code}`);
+      if (configError) alertConfigFailure(cfg.mainAgentId, agent.id, "gemini", item.id, configError);
       logger.warn({ id: item.id, agent: agent.id, code }, "gemini delivery failed (max attempts)");
     } else {
       requeue(item.id);
@@ -189,34 +223,68 @@ export function deliverGeminiPrompt(cfg: EngineConfig, agent: AgentDef, item: Qu
     }
   };
 
-  child.stdout.on("data", (d: Buffer) => scan(d.toString()));
+  child.stdout.on("data", (d: Buffer) => {
+    const t = d.toString();
+    if (outBuf.length < 4_000_000) outBuf += t;
+    scan(t);
+  });
   child.stderr.on("data", (d: Buffer) => scan(d.toString()));
   child.on("close", (code) => finish(code));
   child.on("error", (err) => finish(null, `spawn error: ${String((err as Error).message ?? err)}`));
 }
 
+/**
+ * Book one finished turn: usage row + remember the conversation id. The stdout is a single JSON object
+ * ({conversation_id, usage:{...}}); anything unparsable is ignored (the turn still counts as delivered).
+ */
+export function bookTurn(agentId: string, stdout: string): void {
+  let o: any;
+  try {
+    o = JSON.parse(stdout.trim());
+  } catch {
+    return;
+  }
+  const usage = usageFromGemini(o?.usage);
+  const cid = typeof o?.conversation_id === "string" && o.conversation_id ? o.conversation_id : null;
+  if (usage) recordUsage(agentId, cid, usage);
+  // The turn's usage is a SUM over its model calls, so the context size comes from the conversation's last call.
+  const ctx = cid ? readGeminiContext(cid) : null;
+  if (cid) saveSession(agentId, "gemini", cid, ctx?.tokens ?? 0, ctx?.window ?? 0);
+}
+
+const GEMINI_FALLBACK_MODELS = [
+  "gemini-3.8-flash-high",
+  "gemini-3.8-flash-medium",
+  "gemini-3.8-flash-low",
+  "claude-sonnet-4-6",
+  "claude-opus-4-6-thinking",
+  "gpt-oss-120b-medium",
+];
+const geminiCatalog = createModelCatalog({
+  fallback: GEMINI_FALLBACK_MODELS,
+  fetch: async () => parseAgyModels(await runCli("agy", ["models"])),
+});
+/** Warm the model cache at engine start so the first dashboard/API read already has the live list. */
+export function warmGeminiModels(): Promise<readonly string[]> {
+  return geminiCatalog.warm();
+}
+
 export const geminiRuntime: Runtime = {
   id: "gemini",
   label: "Google Antigravity (Gemini)",
-  // Selectable `--model` values, exactly as `agy models` advertises them (verified live 2026-07-26).
-  // These are SLUGS. An earlier revision carried human labels ("Gemini 3.1 Pro (High)"), which `agy`
-  // does not recognise — it silently falls back to the account default, so the setting looked applied
-  // but was not. The runtime.test.ts slug guard exists to stop that regressing.
+  // Selectable `--model` slugs, read from `agy models` (cached, refreshed in the background): agy retires
+  // models without notice and exits 1 on an unknown one. The built-in list is only the cold-start fallback.
+  // These are SLUGS, never human labels (the runtime.test.ts slug guard stops that regressing).
   // Empty agent.model -> the provider/account default.
-  models: [
-    "gemini-3.6-flash-high",
-    "gemini-3.6-flash-medium",
-    "gemini-3.6-flash-low",
-    "gemini-3.5-flash-high",
-    "gemini-3.5-flash-medium",
-    "gemini-3.5-flash-low",
-    "gemini-3.1-pro-high",
-    "gemini-3.1-pro-low",
-    "claude-sonnet-4-6",
-    "claude-opus-4-6-thinking",
-    "gpt-oss-120b-medium",
-  ],
-  efforts: [],
+  get models() {
+    return geminiCatalog.get();
+  },
+  // `agy --effort` accepts low|medium|high|xhigh|max (agy --help, 2026-10-30).
+  efforts: ["low", "medium", "high", "xhigh", "max"],
+  // agy rejects --effort whenever --model is given (verified 2026-10-30: "conflicts with --effort", "--effort is
+  // not supported for model"): the slug already carries its level, the others have none. Effort only applies to
+  // the account default model.
+  effortNote: "applies only when no model is pinned; a pinned model carries its own level (e.g. -high) or has none",
   launch: launchGeminiHolder,
   isBusy: isGeminiBusy,
   deliver: deliverGeminiPrompt,

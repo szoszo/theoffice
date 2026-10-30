@@ -442,7 +442,7 @@ function agentCard(a) {
       ${effortSel}
     </div>
     <div class="tiles">
-      <div class="tile" style="flex:1"><div class="tl">context</div><div class="tv tnum" style="${a.contextPct != null ? (a.contextPct >= 85 ? "color:#dc2626" : a.contextPct >= 70 ? "color:#d97706" : "color:#16a34a") : "color:#16a34a;font-size:13px"}">${a.contextPct != null ? a.contextPct + "%" : "ok"}</div></div>
+      <div class="tile" style="flex:1"><div class="tl">context</div><div class="tv tnum" style="${a.contextPct != null ? (a.contextPct >= 85 ? "color:#dc2626" : a.contextPct >= 70 ? "color:#d97706" : "color:#16a34a") : "color:#16a34a;font-size:13px"}">${a.contextPct != null ? (a.contextPctEstimated ? "~" : "") + a.contextPct + "%" + (a.contextPctEstimated ? '<span title="estimated from token counts" style="font-size:10px"> est.</span>' : "") : "ok"}</div></div>
       <div class="tile" style="flex:1"><div class="tl">memories</div><div class="tv tnum">${a.memories ?? 0}</div></div>
       <div class="tile" style="flex:1.2"><div class="tl">tokens 24h</div><div class="tv tnum">${tokens}</div></div>
       <div class="tile" style="flex:1"><div class="tl">profile</div><div class="tv" style="font-size:13px">${a.profile === "full" ? "full" : esc(a.profile)}</div></div>

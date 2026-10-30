@@ -46,9 +46,10 @@ describe("runtime registry", () => {
     expect(isKnownRuntime(undefined)).toBe(false);
   });
 
-  it("advertises claude --model ids and no per-launch model for codex", () => {
+  it("advertises claude --model ids and the codex catalog slugs", () => {
     expect(getRuntime("claude").models.length).toBeGreaterThan(0);
-    expect(getRuntime("codex").models.length).toBe(0);
+    expect(getRuntime("codex").models).toContain("gpt-5.5");
+    for (const m of getRuntime("codex").models) expect(m).toMatch(/^[a-z0-9.-]+$/);
   });
 
   it("advertises the current claude models, aliases not dated snapshots", () => {
@@ -76,15 +77,18 @@ describe("runtime registry", () => {
     expect(models.length).toBeGreaterThan(0);
     // this is the bug class that got in: "Gemini 3.1 Pro (High)" instead of gemini-3.1-pro-high
     for (const m of models) expect(m).toMatch(/^[a-z0-9.-]+$/);
-    expect(models).toContain("gemini-3.6-flash-high");
-    expect(models).toContain("gemini-3.1-pro-high");
+    // the live list comes from `agy models`; the built-in fallback must at least hold the current flash tiers
+    expect(models).toContain("gemini-3.8-flash-high");
   });
 
-  it("advertises effort levels for claude only", () => {
+  it("advertises each provider's own effort levels", () => {
     expect([...getRuntime("claude").efforts]).toEqual(["low", "medium", "high", "xhigh", "max"]);
-    // non-claude providers have no equivalent knob; the UI hides the control when the list is empty
-    expect(getRuntime("codex").efforts.length).toBe(0);
-    expect(getRuntime("gemini").efforts.length).toBe(0);
+    expect([...getRuntime("gemini").efforts]).toEqual(["low", "medium", "high", "xhigh", "max"]); // agy --effort
+    expect([...getRuntime("codex").efforts]).toEqual(["low", "medium", "high", "xhigh"]); // no "max" in codex
+  });
+
+  it("gemini explains that effort only applies without a pinned model", () => {
+    expect(listRuntimes().find((r) => r.id === "gemini")!.effortNote).toMatch(/no model is pinned/);
   });
 
   it("exposes efforts through listRuntimes for the dashboard", () => {

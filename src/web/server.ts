@@ -30,6 +30,7 @@ import { hasSession, capturePane, killSession } from "../session/tmux.js";
 import { detectPaneState } from "../session/pane-state.js";
 import { isCodexBusy } from "../session/codex-runtime.js";
 import { isGeminiBusy } from "../session/gemini-runtime.js";
+import { clearSession, estimatedContextPct } from "../session/exec-sessions.js";
 import { applyTune, type TuneKind } from "../session/tune.js";
 import { restoreOwnerSettings } from "../session/claude-settings.js";
 import { normalizeEffort } from "../session/effort.js";
@@ -382,9 +383,11 @@ async function handleApi(
           // codex agents run an idle tmux HOLDER (not a Claude TUI), so pane-state can't classify them.
           // Liveness comes from the exec tracker instead: a turn in flight = busy, otherwise idle.
           state = isCodexBusy(a.id) ? "busy" : "idle";
+          contextPct = estimatedContextPct(a.id, "codex");
         } else if (a.runtime === "gemini") {
           // gemini (Antigravity) also runs an idle HOLDER, not a Claude TUI — same deal as codex.
           state = isGeminiBusy(a.id) ? "busy" : "idle";
+          contextPct = estimatedContextPct(a.id, "gemini");
         } else {
           const pane = capturePane(cfg.tmux.socket, session);
           // Shown to a human debugging the fleet. Beware: this reports "idle" when a TALL draft is
@@ -420,6 +423,8 @@ async function handleApi(
         allowFrom: a.allowFrom ?? [],
         memories: counts[a.id] ?? 0,
         contextPct,
+        // codex/gemini have no live gauge: the figure is derived from the last turn's token counts
+        contextPctEstimated: a.runtime === "codex" || a.runtime === "gemini",
       };
     });
     return json(res, 200, agents);
@@ -731,7 +736,7 @@ async function handleApi(
   }
 
   // --- agent control (write) : /api/agents/<id>/<action> ---
-  const am = path.match(/^\/api\/agents\/([A-Za-z0-9_-]+)\/(model|effort|runtime|enabled|restart|start|stop|cleanreset)$/);
+  const am = path.match(/^\/api\/agents\/([A-Za-z0-9_-]+)\/(model|effort|runtime|enabled|restart|start|stop|cleanreset|newsession)$/);
   if (am && m === "POST") {
     const id = am[1]!, action = am[2]!;
     const agent = loadAgents(cfg).find((a) => a.id === id);
@@ -747,7 +752,14 @@ async function handleApi(
       relaunch();
       return json(res, 200, { ok: true, action });
     }
+    if (action === "newsession") {
+      // codex/gemini only: forget the stored conversation so the NEXT prompt starts a fresh one. The reset
+      // path for a conversation that went bad; claude agents use /clear in the pane or cleanreset.
+      if (runtimeFor(agent).id === "claude") return json(res, 400, { error: "claude agents keep their conversation in the pane; use cleanreset" });
+      return json(res, 200, { ok: true, action, hadSession: clearSession(id) });
+    }
     if (action === "cleanreset") {
+      clearSession(id); // no-op for claude agents; a clean reset of a codex/gemini agent starts a new conversation
       // Fire-and-forget the handoff+reset+summary orchestrator (background python).
       // It tells the agent to write HANDOFF.md, waits, restarts it via this same API,
       // then tells it to re-read the handoff and office-say the owner a summary.
@@ -1033,15 +1045,19 @@ async function tuneAgent(
   // A codex or gemini pane would just receive that text as a prompt, so those providers keep the old
   // restart-to-apply path, and effort — which they don't have at all — is refused outright.
   const isClaude = runtimeFor(agent).id === "claude";
-  if (!isClaude && kind === "effort") {
-    return json(res, 400, { error: "effort is claude-only", runtime: runtimeFor(agent).id });
+  const rtEfforts = runtimeFor(agent).efforts;
+  if (!isClaude && kind === "effort" && rtEfforts.length === 0) {
+    return json(res, 400, { error: "this runtime has no effort levels", runtime: runtimeFor(agent).id });
   }
 
   let value: string | undefined;
   if (!clearing) {
     if (kind === "effort") {
       value = normalizeEffort(trimmed);
-      if (!value) return json(res, 400, { error: "unknown effort", effort: trimmed });
+      // codex/gemini advertise their own subset (codex has no "max"); claude keeps the global five.
+      if (!value || (rtEfforts.length > 0 && !rtEfforts.includes(value))) {
+        return json(res, 400, { error: "unknown effort", effort: trimmed, allowed: rtEfforts });
+      }
     } else {
       // A model is typed into the LIVE pane as `/model <value>` (applyTune -> tmux send-keys -l). An
       // interior newline would submit the model line and then inject arbitrary keystrokes/slash-commands
@@ -1086,6 +1102,7 @@ async function tuneAgent(
       [kind]: value,
       applied: true,
       note: `restarted ${agent.id} to apply (this provider has no live-switch path)`,
+      ...(kind === "effort" && runtimeFor(agent).effortNote ? { warning: runtimeFor(agent).effortNote } : {}),
     });
   }
 
