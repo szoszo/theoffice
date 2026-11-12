@@ -50,9 +50,11 @@ export async function downloadFiles(
   if (files.length === 0) return [];
   mkdirSync(destDir, { recursive: true });
   const out: DownloadedFile[] = [];
-  for (const f of files) {
+  for (const [i, f] of files.entries()) {
     const safe = (f.name || f.id).replace(/[^A-Za-z0-9._-]/g, "_");
-    const path = join(destDir, `${tsPrefix}-${safe}`);
+    // Several attachments share the message ts and often the name too (every phone screenshot is "image.png"):
+    // number them so they cannot overwrite each other; a lone attachment keeps the plain ts-name path.
+    const path = join(destDir, files.length > 1 ? `${tsPrefix}-${i + 1}-${safe}` : `${tsPrefix}-${safe}`);
     let ok = false;
     const url = f.urlPrivateDownload;
     if (url && !isSlackHost(url)) {
