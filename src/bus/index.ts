@@ -1,7 +1,7 @@
 import type { EngineConfig } from "../types.js";
 import { getDb } from "../db/index.js";
 import { enqueueInbound } from "../queue/index.js";
-import { displayNameFor } from "../agents.js";
+import { displayNameFor, loadAgents } from "../agents.js";
 import { log } from "../logger.js";
 
 const logger = log("bus");
@@ -34,6 +34,51 @@ interface PendingMsg {
   content: string;
 }
 
+
+// --- BUS DROP NOTICE (owner GO 2026-11-13; Toby SAFE with 5 conditions) ---
+// The breaker marks messages failed (or, in a GLOBAL trip, leaves them pending) SILENTLY: the sender never learns. Now the SENDER
+// gets ONE short notice in its own inbound queue. Rules that keep it safe: it goes through enqueueInbound (NEVER an agent_messages row:
+// the pair count above counts every row both ways, so a row would feed the breaker); the dedup key lives in the queue, so the rate limit
+// survives restarts; it is never sent to the recipient; it is skipped when sender == recipient or either side is not a live agent.
+let liveCheckOverride: ((id: string) => boolean) | null = null;
+/** test hook: replace the "is this a live agent" check (null = the real roster) */
+export function __setBusLiveCheck(fn: ((id: string) => boolean) | null): void { liveCheckOverride = fn; }
+function isLiveAgent(id: string): boolean {
+  if (liveCheckOverride) return liveCheckOverride(id);
+  if (!busCfg) return true; // no roster captured (unit tests without startBus): cannot judge, do not block
+  return loadAgents(busCfg).some((a) => a.id === id && a.enabled);
+}
+function noticeDropped(m: PendingMsg, reason: string): void {
+  if (m.from_agent === m.to_agent || !isLiveAgent(m.from_agent) || !isLiveAgent(m.to_agent)) return;
+  try {
+    enqueueInbound({
+      agentId: m.from_agent,
+      source: "manual",
+      prompt: `[BUS DROPPED #${m.id} to ${m.to_agent}] ${reason}. Not delivered. No reply needed; do not message ${m.to_agent} about it. Wait ~5 min, then send ONE bundled message (the dropped ones still count in the window, so an instant resend is dropped again).`,
+      dedupKey: `bus-drop:${m.from_agent}:${m.to_agent}:${Math.floor(Date.now() / (BRK_WINDOW_SEC * 1000))}`,
+    });
+  } catch (err) {
+    logger.error({ err }, "bus drop notice: enqueue failed");
+  }
+}
+/** GLOBAL trip: pending messages stay pending (silent). One notice per sender per trip (dedup bucket = the trip's start window). */
+function noticeHeld(senders: Map<string, { id: number; to: string; n: number }>): void {
+  for (const [from, h] of senders) {
+    if (from === h.to || !isLiveAgent(from) || !isLiveAgent(h.to)) continue;
+    try {
+      enqueueInbound({
+        agentId: from,
+        source: "manual",
+        prompt: `[BUS HELD] The whole bus is over its traffic limit, so your pending message(s) (e.g. #${h.id} to ${h.to}, ${h.n} in all) are held and go out when it clears (~5 min). No reply needed; do not resend and do not message anyone about it.`,
+        dedupKey: `bus-held:${from}:${tripBucket}`,
+      });
+    } catch (err) {
+      logger.error({ err }, "bus held notice: enqueue failed");
+    }
+  }
+}
+let tripBucket = 0;
+
 function wrap(m: PendingMsg): string {
   // DISPLAY ONLY: show the sender's human name to the recipient. Routing still uses m.from_agent (the id).
   const from = busCfg ? displayNameFor(busCfg, m.from_agent) : m.from_agent;
@@ -57,6 +102,7 @@ export function deliverPendingMessages(): number {
   if (recentTotal >= BRK_GLOBAL_LIMIT) {
     if (!breakerTripped) {
       breakerTripped = true;
+      tripBucket = Math.floor(Date.now() / (BRK_WINDOW_SEC * 1000));
       logger.fatal({ recentTotal, limit: BRK_GLOBAL_LIMIT, windowSec: BRK_WINDOW_SEC }, "BUS CIRCUIT BREAKER TRIPPED — inter-agent flood; delivery halted");
       try {
         enqueueInbound({
@@ -69,6 +115,10 @@ export function deliverPendingMessages(): number {
         logger.error({ err }, "breaker: failed to wake michael");
       }
     }
+    const held = db.prepare(`SELECT id, from_agent, to_agent FROM agent_messages WHERE status='pending' ORDER BY id ASC LIMIT 100`).all() as PendingMsg[];
+    const senders = new Map<string, { id: number; to: string; n: number }>();
+    for (const m of held) { const h = senders.get(m.from_agent); if (h) h.n++; else senders.set(m.from_agent, { id: m.id, to: m.to_agent, n: 1 }); }
+    noticeHeld(senders);
     return 0;
   } else if (breakerTripped) {
     breakerTripped = false;
@@ -89,6 +139,7 @@ export function deliverPendingMessages(): number {
       db.prepare(`UPDATE agent_messages SET status='failed', result=?, completed_at=unixepoch() WHERE id=?`)
         .run(`circuit-breaker: ${m.from_agent}<->${m.to_agent} exceeded ${BRK_PAIR_LIMIT}/${BRK_WINDOW_SEC}s`, m.id);
       logger.warn({ id: m.id, from: m.from_agent, to: m.to_agent, pairCount }, "bus PAIR breaker: held looping message (not delivered)");
+      noticeDropped(m, `circuit breaker: more than ${BRK_PAIR_LIMIT} messages between ${m.from_agent} and ${m.to_agent} in ${BRK_WINDOW_SEC / 60} minutes`);
       continue;
     }
     const id = enqueueInbound({ agentId: m.to_agent, source: "bus", prompt: wrap(m), dedupKey: `bus:${m.id}` });
