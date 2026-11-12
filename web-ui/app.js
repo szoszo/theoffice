@@ -347,10 +347,12 @@ const TABS = {
     const fmt = (n) => (n || 0).toLocaleString();
     const btns = `<div class="ctl">` + wins.map(([v, l]) => `<button class="winbtn${v === win ? " active" : ""}" onclick="setUsageWin('${v}')">${l}</button>`).join("") + `</div>`;
     const tot = d.usage.reduce((a, x) => ({ o: a.o + x.output, i: a.i + x.input, t: a.t + x.turns, cr: a.cr + x.cacheRead, cc: a.cc + x.cacheWrite }), { o: 0, i: 0, t: 0, cr: 0, cc: 0 });
-    const body = d.usage.map((x) => [esc(x.displayName), fmt(x.turns), fmt(x.output), fmt(x.input), fmt(x.cacheRead), fmt(x.cacheWrite)]);
-    body.push([`<b>TOTAL</b>`, `<b>${fmt(tot.t)}</b>`, `<b>${fmt(tot.o)}</b>`, `<b>${fmt(tot.i)}</b>`, `<b>${fmt(tot.cr)}</b>`, `<b>${fmt(tot.cc)}</b>`]);
+    const na = (x, v) => (x.tracked === false ? "n/a" : fmt(v));
+    const body = d.usage.map((x) => [esc(x.displayName), na(x, x.turns), na(x, x.output), na(x, x.input), na(x, x.cacheRead), na(x, x.cacheWrite), na(x, x.thinking)]);
+    const th = d.usage.reduce((n, x) => n + (x.thinking || 0), 0);
+    body.push([`<b>TOTAL</b>`, `<b>${fmt(tot.t)}</b>`, `<b>${fmt(tot.o)}</b>`, `<b>${fmt(tot.i)}</b>`, `<b>${fmt(tot.cr)}</b>`, `<b>${fmt(tot.cc)}</b>`, `<b>${fmt(th)}</b>`]);
     return btns + `<p class="muted">window: <b>${esc(win)}</b> · output tokens = the headline figure (flat-rate subscription — usage signal, not billed per token)</p>` +
-      rows(["Agent", "Turns", "Output", "Input", "Cache read", "Cache write"], body, true);
+      rows(["Agent", "Turns", "Output", "Input", "Cache read", "Cache write", "Thinking (codex/gemini)"], body, true);
   },
 
   async updates() {

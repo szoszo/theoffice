@@ -8,6 +8,8 @@ import { startScheduler } from "./scheduler/index.js";
 import { startQuotaRefresher } from "./quota/guard.js";
 import { startOwnerBoardBatch } from "./web/owner-cards.js";
 import { startBus } from "./bus/index.js";
+import { warmGeminiModels } from "./session/gemini-runtime.js";
+import { warmCodexModels } from "./session/codex-runtime.js";
 import { startServer } from "./web/server.js";
 import { startAuthWatchdog } from "./web/auth-watchdog.js";
 import { startSessionHygiene } from "./session/modal-sweeper.js";
@@ -69,6 +71,9 @@ async function main(): Promise<void> {
   // Owner Board batch send (spec §5): engine-timer, NOT a scheduled task — a scheduled task would wake
   // an agent (tokens) just to check whether anything is due.
   stops.push(startOwnerBoardBatch(cfg));
+  // fill the codex/gemini model lists from their CLIs in the background (built-in fallback until then)
+  void warmGeminiModels().catch(() => {});
+  void warmCodexModels().catch(() => {});
   if (process.env.OFFICE_BUS_PAUSED)
     logger.warn("OFFICE_BUS_PAUSED set — inter-agent bus NOT started (incident mode)");
   else

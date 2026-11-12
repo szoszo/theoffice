@@ -205,6 +205,30 @@ export const MIGRATIONS: Migration[] = [
           );
           CREATE INDEX idx_kanban_field_events_card ON kanban_card_field_events(card_id, created_at);`,
   },
+  {
+    version: 11,
+    name: "exec-runtime usage + conversation continuity",
+    // codex/gemini run one CLI subprocess per prompt: thinking_tokens extends token_usage (already used for
+    // per-turn rows) and runtime_sessions remembers the conversation id so the next turn resumes it instead of
+    // starting blank. One row per agent; last_context_tokens drives the roll-over and the estimated fill %.
+    // Migration-only (Model A), never SCHEMA_SQL.
+    sql: `ALTER TABLE token_usage ADD COLUMN thinking_tokens INTEGER NOT NULL DEFAULT 0;
+          CREATE TABLE runtime_sessions (
+            agent_id            TEXT PRIMARY KEY,
+            runtime             TEXT NOT NULL,
+            session_id          TEXT NOT NULL,
+            turns               INTEGER NOT NULL DEFAULT 0,
+            last_context_tokens INTEGER NOT NULL DEFAULT 0,
+            updated_at          INTEGER NOT NULL DEFAULT (unixepoch())
+          );`,
+  },
+  {
+    version: 12,
+    name: "runtime_sessions.context_window",
+    // The model's own context window as reported by the CLI (0 = unknown, the per-runtime constant is used).
+    // Migration-only (Model A).
+    sql: `ALTER TABLE runtime_sessions ADD COLUMN context_window INTEGER NOT NULL DEFAULT 0;`,
+  },
 ];
 
 /** Highest known schema version (the baseline, or the max migration version). */

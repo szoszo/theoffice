@@ -352,14 +352,18 @@ describe("agent effort/model tuning", () => {
     expect(agentJson().model).toBe("claude-opus-4-8"); // unchanged — cost/allowlist guard held
   });
 
-  it("refuses effort on a non-claude runtime — the knob does not exist there", async () => {
-    writeFileSync(
-      join(tempDir, "agents", "home", "agent.json"),
-      JSON.stringify({ displayName: "Home", runtime: "gemini" }),
-    );
+  it("accepts a gemini effort from the runtime's own list and persists it", async () => {
+    writeFileSync(join(tempDir, "agents", "home", "agent.json"), JSON.stringify({ displayName: "Home", runtime: "gemini" }));
     const res = await tune("effort", { effort: "xhigh" });
+    expect(res.status).toBe(200);
+    expect(agentJson().effort).toBe("xhigh");
+  });
+
+  it("refuses an effort the codex runtime does not have (max) and does not persist it", async () => {
+    writeFileSync(join(tempDir, "agents", "home", "agent.json"), JSON.stringify({ displayName: "Home", runtime: "codex" }));
+    const res = await tune("effort", { effort: "max" });
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(/claude-only/i);
+    expect((await res.json()).allowed).toEqual(["low", "medium", "high", "xhigh"]);
     expect(agentJson().effort).toBeUndefined();
   });
 
@@ -368,11 +372,11 @@ describe("agent effort/model tuning", () => {
       join(tempDir, "agents", "home", "agent.json"),
       JSON.stringify({ displayName: "Home", runtime: "gemini" }),
     );
-    const res = await tune("model", { model: "gemini-3.6-flash-high" });
+    const res = await tune("model", { model: "gemini-3.8-flash-high" });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.note).toMatch(/restarted/i);
-    expect(agentJson().model).toBe("gemini-3.6-flash-high");
+    expect(agentJson().model).toBe("gemini-3.8-flash-high");
   });
 });
 

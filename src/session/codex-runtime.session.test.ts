@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 /**
  * Pete "can never remember more than one exchange": every inbound was a fresh `codex exec`. These tests pin the
  * fix: one Codex thread per agent, resumed with `codex exec resume <id>`, a safety-net history preamble only when a
- * thread starts fresh, and a clean reset on a dead session / full context / turn cap.
+ * thread starts fresh, and a clean reset on a dead session / full context. In this fork the thread id lives in
+ * exec-sessions (runtime_sessions, context-size roll-over); here it is an in-memory map.
  */
 class FakeChild extends EventEmitter {
   stdout = new EventEmitter();
@@ -26,8 +27,17 @@ vi.mock("../queue/index.js", () => q);
 const history = vi.fn(() => [] as { direction: string; text: string }[]);
 vi.mock("../memory/conversation.js", () => ({ recordInbound: vi.fn(), recentConversation: (...a: unknown[]) => history(...(a as [])) }));
 vi.mock("../env.js", () => ({ readEnvFile: () => ({}) }));
+const sessions = new Map<string, string>();
+vi.mock("./exec-sessions.js", async (orig) => ({
+  ...(await orig<typeof import("./exec-sessions.js")>()),
+  sessionToResume: (agentId: string) => sessions.get(agentId) ?? null,
+  saveSession: (agentId: string, _rt: string, id: string) => void sessions.set(agentId, id),
+  clearSession: (agentId: string) => sessions.delete(agentId),
+  recordUsage: vi.fn(),
+}));
+vi.mock("./exec-context.js", () => ({ readCodexContext: () => null }));
 
-const { deliverCodexPrompt, buildCodexArgs, MAX_SESSION_TURNS } = await import("./codex-runtime.js");
+const { deliverCodexPrompt } = await import("./codex-runtime.js");
 
 const cfg = { owner: { timezone: "UTC" }, paths: { tenantRoot: "/t" }, web: { port: 3430 } } as never;
 let n = 0;
@@ -47,23 +57,16 @@ beforeEach(() => {
   for (const f of Object.values(q)) (f as { mockClear?: () => void }).mockClear?.();
 });
 
-describe("buildCodexArgs", () => {
-  it("fresh run vs resume of a thread", () => {
-    expect(buildCodexArgs(null, "hi")).toEqual(["exec", "--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "hi"]);
-    expect(buildCodexArgs("T-9", "hi")).toEqual(["exec", "resume", "T-9", "--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "hi"]);
-  });
-});
-
 describe("one Codex thread per agent", () => {
   it("a 3-turn conversation stays in ONE thread (turn 2 and 3 resume the thread turn 1 created)", () => {
     const a = mkAgent();
     deliverCodexPrompt(cfg, a as never, item(a.id, "my code word is BANANA"));
     finishOk(kids[0], "T-A");
     deliverCodexPrompt(cfg, a as never, item(a.id, "what was my code word?"));
-    expect(argsOf(1).slice(0, 3)).toEqual(["exec", "resume", "T-A"]);
+    expect([argsOf(1)[1], argsOf(1).at(-2)]).toEqual(["resume", "T-A"]);
     finishOk(kids[1], "T-A");
     deliverCodexPrompt(cfg, a as never, item(a.id, "and again?"));
-    expect(argsOf(2).slice(0, 3)).toEqual(["exec", "resume", "T-A"]);
+    expect([argsOf(2)[1], argsOf(2).at(-2)]).toEqual(["resume", "T-A"]);
     expect(argsOf(0)).not.toContain("resume");
   });
 
@@ -96,7 +99,7 @@ describe("one Codex thread per agent", () => {
     kids[1].stderr.emit("data", Buffer.from("Error: thread/resume failed: no rollout found for thread id T-A"));
     kids[1].emit("close", 1);
     expect(q.requeueNoPenalty).toHaveBeenCalledTimes(1);
-    expect(existsSync(join(a.dir, ".codex-session.json"))).toBe(false);
+    expect(sessions.has(a.id)).toBe(false);
     deliverCodexPrompt(cfg, a as never, item(a.id, "y again"));
     expect(argsOf(2)).not.toContain("resume");
   });
@@ -112,19 +115,10 @@ describe("one Codex thread per agent", () => {
     expect(argsOf(2)).not.toContain("resume");
   });
 
-  it("the turn cap rolls the thread over", () => {
-    const a = mkAgent();
-    writeFileSync(join(a.dir, ".codex-session.json"), JSON.stringify({ id: "T-OLD", turns: MAX_SESSION_TURNS, startedAt: 1 }));
-    deliverCodexPrompt(cfg, a as never, item(a.id, "x"));
-    expect(argsOf(0)).not.toContain("resume");
-  });
-
-  it("the session file records the thread id and counts turns", () => {
+  it("the stored session records the thread id", () => {
     const a = mkAgent();
     deliverCodexPrompt(cfg, a as never, item(a.id, "x"));
     finishOk(kids[0], "T-A");
-    const s = JSON.parse(readFileSync(join(a.dir, ".codex-session.json"), "utf8"));
-    expect(s.id).toBe("T-A");
-    expect(s.turns).toBe(1);
+    expect(sessions.get(a.id)).toBe("T-A");
   });
 });

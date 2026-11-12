@@ -89,6 +89,8 @@ export interface EngineConfig {
   tenantIdentifiers?: string[];
   /** extra health-deny regex fragments for the briefing board (tenant's own medication names etc.) */
   briefingHealthDenyExtra?: string[];
+  /** codex/gemini conversation roll-over: a fresh conversation at `maxTurns` resumed turns (default 60) or past `rolloverFraction` of the context window (default 0.7), whichever comes first */
+  execSessions?: { maxTurns?: number; rolloverFraction?: number };
   web: WebConfig;
   tmux: TmuxConfig;
   owner: OwnerConfig;

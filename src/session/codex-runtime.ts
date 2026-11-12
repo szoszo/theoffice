@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildAgentEnv } from "./agent-env.js";
 import type { EngineConfig, AgentDef } from "../types.js";
@@ -11,6 +11,9 @@ import { markDelivering, markDelivered, markFailed, requeue, requeueNoPenalty, M
 import { recordInbound, recentConversation } from "../memory/conversation.js";
 import type { Runtime, QueuedItem } from "./runtime.js";
 import { frameForDelivery } from "./delivery.js";
+import { readCodexContext } from "./exec-context.js";
+import { createModelCatalog, parseCodexModels, runCli, usableModel } from "./model-catalog.js";
+import { sessionToResume, rolloverLimits, saveSession, clearSession, recordUsage, usageFromCodex, alertConfigFailure, CONFIG_ERROR_RE, type TurnUsage } from "./exec-sessions.js";
 
 /**
  * Codex runtime path (Pete-on-Codex pilot). A `runtime: "codex"` agent does NOT run a persistent TUI
@@ -37,45 +40,14 @@ const USAGE_LIMIT_RE =
 // terminal handler as a no-penalty requeue (our kill, not the message's fault).
 const TURN_TIMEOUT_MS = 13 * 60_000;
 
-// ---- one Codex thread per agent (Pete "can never remember more than one exchange") ----
-// Every inbound used to be a fresh `codex exec`: stateless. Now the first turn creates a thread (thread.started carries its
-// id), it is stored in <agent.dir>/.codex-session.json and every later turn runs `codex exec resume <id>`. A new thread starts
-// only when the stored one is dead ("no rollout found"), the context is full, or MAX_SESSION_TURNS is reached; a fresh thread
-// gets the last HISTORY_MESSAGES conversation_log messages prepended as a safety net.
-export const MAX_SESSION_TURNS = 80;
+// ---- conversation continuity ----
+// The thread id lives in exec-sessions (runtime_sessions, shared with gemini, rolled over by context size). From upstream:
+// a fresh thread gets the last HISTORY_MESSAGES conversation_log messages prepended as a safety net, and a dead or full
+// thread is detected from the CLI's error output, dropped, and the same message retried fresh without burning an attempt.
 const HISTORY_MESSAGES = 10;
 const HISTORY_CHARS = 500;
-const SESSION_FILE = ".codex-session.json";
 const DEAD_SESSION_RE = /no rollout found|thread\/resume failed|session not found/i;
 const CONTEXT_FULL_RE = /context window|context length|out of room|maximum context/i;
-type CodexSession = { id: string; turns: number; startedAt: number };
-
-export function buildCodexArgs(sessionId: string | null, prompt: string): string[] {
-  const flags = ["--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox"];
-  return sessionId ? ["exec", "resume", sessionId, ...flags, prompt] : ["exec", ...flags, prompt];
-}
-function readSession(dir: string): CodexSession | null {
-  try {
-    const s = JSON.parse(readFileSync(join(dir, SESSION_FILE), "utf8")) as CodexSession;
-    return s && typeof s.id === "string" && s.id && (s.turns ?? 0) < MAX_SESSION_TURNS ? s : null;
-  } catch {
-    return null;
-  }
-}
-function writeSession(dir: string, s: CodexSession): void {
-  try {
-    writeFileSync(join(dir, SESSION_FILE), JSON.stringify(s));
-  } catch {
-    /* best-effort: worst case the next turn starts a fresh thread with the history preamble */
-  }
-}
-function clearSession(dir: string): void {
-  try {
-    rmSync(join(dir, SESSION_FILE), { force: true });
-  } catch {
-    /* ignore */
-  }
-}
 function withHistory(agentId: string, prompt: string): string {
   let rows: { direction: string; text: string }[] = [];
   try {
@@ -104,8 +76,11 @@ export function decideCodexOutcome(o: {
   sawUsageLimit: boolean;
   attempts: number;
   maxAttempts?: number;
+  /** deterministic configuration error: fail now, retries cannot help */
+  configError?: boolean;
 }): CodexOutcome {
   if (o.code === 0 && o.sawCompleted) return "delivered";
+  if (o.configError) return "failed";
   if (o.sawUsageLimit) return "backoff";
   return o.attempts >= (o.maxAttempts ?? MAX_DELIVERY_ATTEMPTS) ? "failed" : "requeue";
 }
@@ -160,12 +135,18 @@ export function deliverCodexPrompt(cfg: EngineConfig, agent: AgentDef, item: Que
       /* best-effort */
     }
   }
-  const session = readSession(agent.dir);
+  // Continuity: `codex exec resume <thread_id>` continues the stored conversation (cleared by the context
+  // roll-over, a dead/full thread or a reset). Same flags are accepted after `resume` (codex exec resume --help).
+  const resumeId = sessionToResume(agent.id, "codex", rolloverLimits(cfg.execSessions));
   const framed = frameForDelivery(item);
-  const prompt = session ? framed : withHistory(agent.id, framed);
+  const prompt = resumeId ? framed : withHistory(agent.id, framed);
   // unattended posture, same spirit as claude's --dangerously-skip-permissions (the box is the boundary):
   // no approval prompts, no sandbox restriction so the agent can office-say / git / write the vault.
-  const args = buildCodexArgs(session?.id ?? null, prompt);
+  const flags = ["--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox"];
+  const model = usableModel(agent.id, "codex", agent.model, codexRuntime.models);
+  if (model) flags.push("-m", model);
+  if (agent.effort && codexRuntime.efforts.includes(agent.effort)) flags.push("-c", `model_reasoning_effort="${agent.effort}"`);
+  const args = resumeId ? ["exec", "resume", ...flags, resumeId, prompt] : ["exec", ...flags, prompt];
 
   // Codex P3 spawn-safety: claim in-flight + charge the attempt ONLY after the subprocess actually spawned.
   // If spawn() throws synchronously (bad PATH, ENOMEM) we must NOT leave inFlight set (that would wedge the
@@ -191,6 +172,8 @@ export function deliverCodexPrompt(cfg: EngineConfig, agent: AgentDef, item: Que
   let sawCompleted = false;
   let sawUsageLimit = false;
   let threadId: string | null = null;
+  let configError: string | null = null;
+  let turnUsage: TurnUsage | null = null;
   let sawDeadSession = false;
   let sawContextFull = false;
   let buf = "";
@@ -222,15 +205,19 @@ export function deliverCodexPrompt(cfg: EngineConfig, agent: AgentDef, item: Que
     }
     if (sawDeadSession || sawContextFull) {
       // the stored thread is gone or full: drop it and retry the SAME message on a fresh thread (not the message's fault)
-      clearSession(agent.dir);
+      clearSession(agent.id);
       requeueNoPenalty(item.id);
       logger.warn({ id: item.id, agent: agent.id, dead: sawDeadSession }, "codex thread dropped -> next turn starts fresh (no attempt charged)");
       return;
     }
-    const outcome = decideCodexOutcome({ code, sawCompleted, sawUsageLimit, attempts: item.attempts });
+    const outcome = decideCodexOutcome({ code, sawCompleted, sawUsageLimit, attempts: item.attempts, configError: !!configError });
     if (outcome === "delivered") {
-      const id = threadId ?? session?.id;
-      if (id) writeSession(agent.dir, { id, turns: (threadId && session && threadId !== session.id ? 0 : (session?.turns ?? 0)) + 1, startedAt: session?.startedAt ?? Date.now() });
+      if (turnUsage) recordUsage(agent.id, threadId, turnUsage);
+      if (threadId) {
+        // turn usage may be summed over the turn's model calls; the context size is the last call's prompt
+        const ctx = readCodexContext(threadId);
+        saveSession(agent.id, "codex", threadId, ctx?.tokens ?? 0, ctx?.window ?? 0);
+      }
       markDelivered(item.id);
       recordInbound(item.agent_id, item.reply_channel, item.prompt);
       logger.info({ id: item.id, agent: agent.id }, "codex prompt delivered (turn.completed)");
@@ -238,8 +225,15 @@ export function deliverCodexPrompt(cfg: EngineConfig, agent: AgentDef, item: Que
       cooldownUntil.set(agent.id, Date.now() + USAGE_BACKOFF_MS);
       requeueNoPenalty(item.id);
       logger.warn({ id: item.id, agent: agent.id, code, backoffMin: USAGE_BACKOFF_MS / 60_000 }, "codex usage cap -> holding (no attempt charged)");
+    } else if (resumeId && outcome !== "failed") {
+      // A failed RESUME is most likely a stale/unknown thread id: forget it so the retry starts a new
+      // conversation, and refund the attempt (the message is not at fault).
+      clearSession(agent.id);
+      requeueNoPenalty(item.id);
+      logger.warn({ id: item.id, agent: agent.id, code }, "codex resume failed -> conversation reset, retrying fresh (no attempt charged)");
     } else if (outcome === "failed") {
-      markFailed(item.id, errMsg ?? `exit ${code}, turn.completed=${sawCompleted}`);
+      markFailed(item.id, errMsg ?? configError ?? `exit ${code}, turn.completed=${sawCompleted}`);
+      if (configError) alertConfigFailure(cfg.mainAgentId, agent.id, "codex", item.id, configError);
       logger.warn({ id: item.id, agent: agent.id, code }, "codex delivery failed (max attempts)");
     } else {
       requeue(item.id);
@@ -256,12 +250,18 @@ export function deliverCodexPrompt(cfg: EngineConfig, agent: AgentDef, item: Que
       if (!line) continue;
       try {
         const ev = JSON.parse(line);
-        if (ev?.type === "turn.completed") sawCompleted = true;
         if (ev?.type === "thread.started" && typeof ev.thread_id === "string") threadId = ev.thread_id;
+        // error / turn.failed events carry the CLI's message; a config-class message can never succeed on retry
+        const evMsg = ev?.type === "error" ? ev.message : ev?.type === "turn.failed" ? ev.error?.message : undefined;
+        if (typeof evMsg === "string" && CONFIG_ERROR_RE.test(evMsg)) configError = evMsg;
         // only error-ish events can mean a dead thread; an agent_message that merely quotes the phrase must not drop it
-        if ((ev?.type === "error" || ev?.type === "turn.failed") && session && DEAD_SESSION_RE.test(line)) sawDeadSession = true;
+        if ((ev?.type === "error" || ev?.type === "turn.failed") && resumeId && DEAD_SESSION_RE.test(line)) sawDeadSession = true;
+        if (ev?.type === "turn.completed") {
+          sawCompleted = true;
+          turnUsage = usageFromCodex(ev.usage);
+        }
       } catch {
-        if (session && DEAD_SESSION_RE.test(line)) sawDeadSession = true; // plain-text error line
+        if (resumeId && DEAD_SESSION_RE.test(line)) sawDeadSession = true; // plain-text error line
       }
       if (USAGE_LIMIT_RE.test(line)) sawUsageLimit = true; // error events sometimes ride on stdout
     }
@@ -269,7 +269,7 @@ export function deliverCodexPrompt(cfg: EngineConfig, agent: AgentDef, item: Que
   // codex surfaces auth/limit errors on stderr too
   child.stderr.on("data", (d: Buffer) => {
     const t = d.toString();
-    if (DEAD_SESSION_RE.test(t) && session) sawDeadSession = true;
+    if (DEAD_SESSION_RE.test(t) && resumeId) sawDeadSession = true;
     if (CONTEXT_FULL_RE.test(t)) sawContextFull = true;
     if (USAGE_LIMIT_RE.test(t)) sawUsageLimit = true;
   });
@@ -278,12 +278,25 @@ export function deliverCodexPrompt(cfg: EngineConfig, agent: AgentDef, item: Que
   child.on("error", (err) => finish(null, `spawn error: ${String((err as Error).message ?? err)}`));
 }
 
+const codexCatalog = createModelCatalog({
+  fallback: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"],
+  fetch: async () => parseCodexModels(await runCli("codex", ["debug", "models"])),
+});
+export function warmCodexModels(): Promise<readonly string[]> {
+  return codexCatalog.warm();
+}
+
 export const codexRuntime: Runtime = {
   id: "codex",
   label: "OpenAI Codex (GPT-5.5)",
-  // Codex uses the signed-in ChatGPT account's model, not a per-launch flag, so no selectable list.
-  models: [],
-  efforts: [],
+  // Selectable `-m` values: the entries `codex debug models` lists as selectable, read from the CLI (cached,
+  // refreshed in the background). The built-in list is only the cold-start fallback.
+  // Empty agent.model -> the signed-in account's default.
+  get models() {
+    return codexCatalog.get();
+  },
+  // `-c model_reasoning_effort=...`; the catalog's supported_reasoning_levels for every listed model.
+  efforts: ["low", "medium", "high", "xhigh"],
   launch: launchCodexHolder,
   isBusy: isCodexBusy,
   deliver: deliverCodexPrompt,
