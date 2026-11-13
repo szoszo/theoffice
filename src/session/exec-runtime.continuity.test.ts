@@ -28,7 +28,7 @@ vi.mock("./exec-sessions.js", async (orig) => ({ ...(await orig<typeof import(".
 const { deliverCodexPrompt } = await import("./codex-runtime.js");
 const { deliverGeminiPrompt } = await import("./gemini-runtime.js");
 
-const cfg = { mainAgentId: "zeus", owner: { timezone: "UTC" }, paths: { tenantRoot: "/t" }, web: { port: 3430 } } as never;
+const cfg = { mainAgentId: "main-agent", owner: { timezone: "UTC" }, paths: { tenantRoot: "/t" }, web: { port: 3430 } } as never;
 let n = 0;
 const agent = (extra: object = {}) => ({ id: `ct-${++n}`, dir: "/tmp/does-not-exist", ...extra }) as never;
 const item = (a: { id: string }) => ({ id: 1, agent_id: a.id, source: "manual", prompt: "hi", reply_channel: null, attempts: 0 }) as never;
@@ -177,7 +177,7 @@ describe("deterministic config errors fail once and alert", () => {
     child.emit("close", 1);
     expect(q.markFailed).toHaveBeenCalledTimes(1);
     expect(q.requeue).not.toHaveBeenCalled();
-    expect(alertSpy).toHaveBeenCalledWith("zeus", a.id, "gemini", 1, expect.stringContaining("conflicts with"));
+    expect(alertSpy).toHaveBeenCalledWith("main-agent", a.id, "gemini", 1, expect.stringContaining("conflicts with"));
   });
   it("gemini: a transient exit 1 (no config text) still retries", () => {
     const a = agent() as { id: string };

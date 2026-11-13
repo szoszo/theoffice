@@ -151,8 +151,8 @@ describe("gemini bookTurn", () => {
 describe("config-error alert text", () => {
   it("keeps only the first line, elides long quoted values (an echoed prompt) and caps the length", () => {
     const prompt = "my private message ".repeat(20);
-    alertConfigFailure("zeus", "cap-1", "codex", 7, `error: unexpected argument '${prompt}' found\n\nUsage: codex exec [OPTIONS] '${prompt}'`);
-    const row = db.prepare("SELECT content FROM agent_messages WHERE to_agent = 'zeus'").get() as { content: string };
+    alertConfigFailure("main-agent", "cap-1", "codex", 7, `error: unexpected argument '${prompt}' found\n\nUsage: codex exec [OPTIONS] '${prompt}'`);
+    const row = db.prepare("SELECT content FROM agent_messages WHERE to_agent = 'main-agent'").get() as { content: string };
     expect(row.content).toContain("unexpected argument");
     expect(row.content).not.toContain("my private message");
     expect(row.content).not.toContain("Usage:");
