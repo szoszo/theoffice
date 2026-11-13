@@ -131,9 +131,11 @@ def detect_once(d):
     if forced: bad, reason = True, "forced drill"
     else:
         h_ok, h_why = d["health"](); n, hint = d["panes"](); s_bad, s_why = d["status"](); q_bad, q_why = d["quota"]() if d.get("quota") else (False, "")
-        hard = (not h_ok) or n >= 2 or q_bad; bad = hard or s_bad or n == 1   # the limit is account-wide: two panes on the modal is hard evidence, one pane or a status page alone is only a hint
+        hard = (not h_ok) or n >= 2 or q_bad   # the limit is account-wide: two panes on the modal is hard evidence; one pane is a hint; the status page ALONE never counts (a status "partial outage" with the primary agent answering once ran a takeover for hours)
+        dead = d["dead"](True) if (s_bad or n == 1) and not hard else False
+        bad = hard or n == 1 or (s_bad and dead)
         reason = (f"usage limit, {hint}" if hint else "usage limit") if n > 0 else ((h_why if not h_ok else "") or (q_why if q_bad else "") or s_why)
-        need = 2 if hard else (2 if (bad and d["dead"](bad)) else 3)   # a status page alone is only a hint: three checks, or two when the primary agent is also silent
+        need = 2 if hard else (2 if (bad and dead) else 3)   # one pane: three checks, or two when the primary agent is also silent; the status page counts only together with a silent primary
     st, tr = decide(st, bad, reason, now, need)
     if tr == "outage": st["outage_since"] = now; st["reset"] = hint; st["todo"] = {"act": "start", "tell": f":rotating_light: Claude is out ({st['reason']}). {C()['captain_name']} is emergency captain."}
     elif tr == "recovered":

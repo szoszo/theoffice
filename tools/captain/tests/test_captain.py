@@ -367,14 +367,19 @@ class Detect(Base):
             self.t += 300; cp.detect_once(d); self.t += 300; cp.detect_once(d); self.assertEqual(self.sent, [])   # clear twice, but the 30 minute dwell is not over: stay captain
             self.t += 1500; cp.detect_once(d)
             self.assertEqual(len(self.sent), 1); self.assertIn("Claude is back", self.sent[0]); self.assertIn("Main has the con again", self.sent[0]); self.assertEqual(self.log, ["end"]); self.assertEqual(json.load(open(d["state_path"]))["state"], "ok")
-    def test_login_problem_counts_after_two_checks_but_the_status_page_alone_needs_three(self):
+    def test_login_problem_counts_after_two_checks_but_the_status_page_alone_never_does(self):
+        """A status-page 'partial outage' while the primary agent answers once ran a takeover for hours. Status alone is a hint, never a trigger."""
         with tempfile.TemporaryDirectory() as tmp:
             self.t = 5; d = self.deps(tmp, health=(False, "credential expired")); cp.detect_once(d); self.t += 300; cp.detect_once(d)
             self.assertEqual(len(self.sent), 1); self.assertIn("credential expired", self.sent[0])
         with tempfile.TemporaryDirectory() as tmp:
             self.t = 5; d = self.deps(tmp, status=(True, "Anthropic status: Claude Code major outage"))
-            cp.detect_once(d); self.t += 300; cp.detect_once(d); self.assertEqual(self.sent, [])                 # a status page alone is only a hint
-            self.t += 300; cp.detect_once(d); self.assertEqual(len(self.sent), 1); self.assertIn("Anthropic status", self.sent[0])
+            for _ in range(8): cp.detect_once(d); self.t += 300
+            self.assertEqual(self.sent, [])                                                                  # the primary answers: no number of status-only checks starts an outage
+        with tempfile.TemporaryDirectory() as tmp:
+            self.t = 5; d = self.deps(tmp, status=(True, "Anthropic status: Claude Code major outage"), dead=True)
+            cp.detect_once(d); self.assertEqual(self.sent, []); self.t += 300; cp.detect_once(d)
+            self.assertEqual(len(self.sent), 1); self.assertIn("Anthropic status", self.sent[0])             # status plus a silent primary is real: the normal two checks
     def test_one_pane_alone_needs_three_checks_two_panes_need_two(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.t = 5; d = self.deps(tmp, panes=(1, "resets 6pm")); cp.detect_once(d); self.t += 300; cp.detect_once(d); self.assertEqual(self.sent, [])
