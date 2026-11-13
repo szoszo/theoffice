@@ -1,0 +1,9 @@
+[Unit]
+Description=Captain backup account: re-sync the backup login while it is in use, retry a pending cleanup (no AI; a no-op otherwise)
+
+[Service]
+Environment=OFFICE_TENANT_ROOT=@TENANT@
+Type=oneshot
+ExecStart=/usr/bin/python3 @ROOT@/tools/captain/captain.py backup-sync
+MemoryMax=100M
+Nice=10

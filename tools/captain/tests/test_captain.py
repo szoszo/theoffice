@@ -413,6 +413,111 @@ class Detect(Base):
             open(d["force_path"], "w").write("outage"); self.t += 300; cp.detect_once(d); self.t += 300; cp.detect_once(d)
             self.assertEqual(len(self.sent), 1); self.assertIn("drill", self.sent[0].lower())
 
+class BackupTier(Base):
+    deps = Detect.deps
+    """Owner 2026-11-13: when the MAIN Claude account hits its usage limit and a backup login is available, the primary agent moves to the backup account instead of the whole fleet going to the captain/Codex. Provider outages and both accounts exhausted still mean the captain."""
+    def bdeps(self, tmp, avail=True, modal_agents=(), quota_ok=False, on_ok=True, verify=True, **kw):
+        d = self.deps(tmp, **kw); self.calls = []
+        d.update(backup_available=lambda: avail, backup_on=lambda: self.calls.append("on") or on_ok, backup_off=lambda: self.calls.append("off") or True, backup_sync=lambda: self.calls.append("sync"),
+                 modal_agents=lambda: set(modal_agents), quota_ok=lambda: quota_ok, backup_agents=lambda: ["main"], backup_verify=lambda: verify); return d
+    def state(self, tmp): return json.load(open(os.path.join(tmp, "outage.json")))
+    def test_a_usage_limit_with_a_backup_available_switches_to_the_backup_not_to_pete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.t = 1000; d = self.bdeps(tmp, panes=(2, "resets 6pm")); cp.detect_once(d); self.assertEqual(self.sent, [])
+            self.t += 300; cp.detect_once(d)
+            self.assertEqual(self.calls, ["on"]); self.assertNotIn("start", self.log); self.assertEqual(self.state(tmp)["state"], "backup")
+            self.assertEqual(len(self.sent), 1); self.assertIn("backup account", self.sent[0]); self.assertNotIn("Captain is emergency captain", self.sent[0])
+            self.t += 300; cp.detect_once(d); self.assertEqual(len(self.sent), 1); self.assertEqual(self.calls, ["on"])               # one switch, one line
+    def test_a_usage_limit_without_a_usable_backup_is_the_normal_pete_takeover(self):
+        for kw in (dict(avail=False), dict()):
+            with tempfile.TemporaryDirectory() as tmp:
+                self.t = 1000; d = self.bdeps(tmp, panes=(2, ""), **kw)
+                if not kw: [d.pop(k) for k in ("backup_available", "backup_on", "backup_off", "backup_sync", "modal_agents", "quota_ok", "backup_agents")]      # feature not configured at all
+                cp.detect_once(d); self.t += 300; cp.detect_once(d)
+                self.assertEqual(self.state(tmp)["state"], "outage"); self.assertIn("start", self.log); self.assertNotIn("on", getattr(self, "calls", []) if kw else [])
+    def test_a_provider_or_login_problem_goes_straight_to_pete_even_with_a_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.t = 1000; d = self.bdeps(tmp, health=(False, "credential expired")); cp.detect_once(d); self.t += 300; cp.detect_once(d)
+            self.assertEqual(self.state(tmp)["state"], "outage"); self.assertEqual(self.calls, []); self.assertIn("start", self.log)
+    def _in_backup(self, tmp, **kw):
+        self.t = 1000; d = self.bdeps(tmp, panes=(2, ""), **kw); cp.detect_once(d); self.t += 300; cp.detect_once(d); self.assertEqual(self.state(tmp)["state"], "backup"); self.sent.clear(); return d
+    def test_when_the_main_account_resets_twice_in_a_row_it_goes_back_to_main(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._in_backup(tmp); self.calls.clear()
+            d = self.bdeps(tmp, quota_ok=True); self.t += 300; cp.detect_once(d); self.assertEqual(self.state(tmp)["state"], "backup")      # one clean reading is not a reset
+            self.t += 300; cp.detect_once(d)
+            self.assertEqual(self.state(tmp)["state"], "ok"); self.assertEqual(self.calls, ["off"]); self.assertEqual(len(self.sent), 1); self.assertIn("main account", self.sent[0])
+    def test_a_reading_that_is_not_below_the_limit_never_counts_as_a_reset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._in_backup(tmp); d = self.bdeps(tmp, quota_ok=False)
+            for _ in range(5): self.t += 300; cp.detect_once(d)
+            self.assertEqual(self.state(tmp)["state"], "backup"); self.assertNotIn("off", self.calls)
+    def test_when_the_backup_pane_hits_the_limit_too_it_is_pete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._in_backup(tmp); d = self.bdeps(tmp, panes=(2, ""), modal_agents=["main"])
+            self.t += 300; cp.detect_once(d); self.assertEqual(self.state(tmp)["state"], "backup")                                       # one check is not enough
+            self.t += 300; cp.detect_once(d); st = self.state(tmp)
+            self.assertEqual(st["state"], "outage"); self.assertTrue(st["backup_exhausted"]); self.assertIn("start", self.log); self.assertIn("both", self.sent[-1])
+    def test_a_modal_on_a_parked_agent_alone_is_not_the_backup_running_out(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._in_backup(tmp); d = self.bdeps(tmp, panes=(2, ""), modal_agents=["zeta"])                                              # lean mode: other agents are parked on the main account
+            for _ in range(4): self.t += 300; cp.detect_once(d)
+            self.assertEqual(self.state(tmp)["state"], "backup")
+    def test_after_pete_took_over_a_main_reset_still_moves_the_backup_agents_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._in_backup(tmp); d = self.bdeps(tmp, panes=(2, ""), modal_agents=["main"]); self.t += 300; cp.detect_once(d); self.t += 300; cp.detect_once(d); self.calls.clear()
+            d = self.bdeps(tmp, panes=(2, ""), modal_agents=["main"], quota_ok=True); self.t += 300; cp.detect_once(d); self.t += 300; cp.detect_once(d)
+            self.assertEqual(self.calls, ["off"]); self.assertFalse(self.state(tmp)["backup"]["active"])
+    def test_a_recovery_from_an_outage_that_began_on_backup_also_switches_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._in_backup(tmp); d = self.bdeps(tmp, panes=(2, ""), modal_agents=["main"]); self.t += 300; cp.detect_once(d); self.t += 300; cp.detect_once(d)
+            self.t += 2000; self.calls.clear(); d = self.bdeps(tmp)                                                                      # everything clear, quota_ok False but no limit evidence
+            cp.detect_once(d); self.t += 300; cp.detect_once(d)
+            self.assertEqual(self.state(tmp)["state"], "ok"); self.assertEqual(self.calls, ["off"])
+    def test_a_failed_switch_falls_to_pete_in_the_same_tick(self):
+        """Owner 2026-11-13: no agent in the loop. If the backup switch itself fails (ssh down, file missing) the takeover starts in the SAME tick, not the next."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self.t = 1000; d = self.bdeps(tmp, panes=(2, ""), on_ok=False); cp.detect_once(d); self.t += 300; cp.detect_once(d)
+            self.assertEqual(self.calls, ["on"]); st = self.state(tmp); self.assertEqual(st["state"], "outage"); self.assertIn("start", self.log); self.assertFalse((st.get("backup") or {}).get("active"))
+            self.assertEqual(len(self.sent), 1); self.assertIn("Captain is emergency captain", self.sent[0])
+    def test_an_agent_still_on_the_limit_screen_after_the_restart_is_switched_back_and_it_is_pete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.t = 1000; d = self.bdeps(tmp, panes=(2, ""), verify=False); cp.detect_once(d); self.t += 300; cp.detect_once(d)
+            self.assertEqual(self.calls, ["on", "off"]); self.assertEqual(self.state(tmp)["state"], "outage"); self.assertIn("start", self.log); self.assertFalse((self.state(tmp).get("backup") or {}).get("active"))
+    def test_the_force_drill_still_works_while_on_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._in_backup(tmp); open(os.path.join(tmp, "captain-force"), "w").write("outage"); d = self.bdeps(tmp); self.t += 2000; cp.detect_once(d); self.t += 300; cp.detect_once(d)   # past the 30 min dwell after the switch
+            self.assertEqual(self.state(tmp)["state"], "outage"); self.assertIn("start", self.log)
+    def test_a_pending_cleanup_is_retried_by_the_sync_timer_when_not_on_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.t = 1000; d = self.bdeps(tmp); cp.detect_once(d); d["backup_cleanup"] = lambda: self.calls.append("cleanup") or "cleaned"
+            self.assertEqual(cp.backup_sync_tick(d), "cleaned"); self.assertEqual(self.calls, ["cleanup"])
+    def test_the_login_sync_is_its_own_timer_job_active_only_in_backup_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = self._in_backup(tmp); self.calls.clear()
+            self.t += 1900; cp.detect_once(d); self.assertEqual(self.calls, [])                                                       # the detector tick never syncs
+            self.assertEqual(cp.backup_sync_tick(d), "synced"); self.assertEqual(self.calls, ["sync"])
+        with tempfile.TemporaryDirectory() as tmp:
+            self.t = 1000; d = self.bdeps(tmp); cp.detect_once(d)                                                                      # state ok
+            d.pop("backup_cleanup", None); self.assertEqual(cp.backup_sync_tick(d), "not on backup"); self.assertEqual(self.calls, [])
+
+class BackupSelftest(Base):
+    def test_the_selftest_has_a_backup_dry_run_that_passes_when_the_tier_is_not_configured(self):
+        import selftest; names = [n for n, _ in selftest.build_checks()]; self.assertIn("backup account login (dry run)", names)
+        self.assertEqual(selftest.check_backup(), (True, "backup tier not configured"))
+
+class QuotaOk(Base):
+    def test_only_fresh_data_below_the_limit_counts_as_a_reset(self):
+        doc = lambda a, b, at: {"snapshot": {"fetchedAtMs": at * 1000, "sevenDay": {"usedPercent": a}, "fiveHour": {"usedPercent": b}}}
+        self.assertTrue(cp.quota_ok_signal(doc(40, 10, 1000), 1100)); self.assertFalse(cp.quota_ok_signal(doc(100, 10, 1000), 1100)); self.assertFalse(cp.quota_ok_signal(doc(96, 10, 1000), 1100)); self.assertFalse(cp.quota_ok_signal(doc(40, 98, 1000), 1100))   # margin: 5h window just reset but the weekly is at 98% would flap; self.assertFalse(cp.quota_ok_signal(doc(40, 100, 1000), 1100))
+        self.assertFalse(cp.quota_ok_signal(doc(40, 10, 1000), 1000 + cp.QUOTA_MAX_AGE + 5)); self.assertFalse(cp.quota_ok_signal({}, 1000)); self.assertFalse(cp.quota_ok_signal({"snapshot": {"fetchedAtMs": 1000000}}, 1000))
+
+class ModalAgents(Base):
+    def test_session_names_map_to_agent_ids(self):
+        panes = {"agent-main": "x\n1. Stop and wait for limit to reset\n2. Upgrade your plan\nEnter to confirm", "agent-zeta": "all fine", "other-thing": "1. Stop and wait for limit to reset\n2. Upgrade your plan"}
+        self.assertEqual(cp.modal_agents_from(panes), {"main"})
+
+
 class DeadPrimary(Base):
     def test_owner_dm_without_a_reply_for_15_minutes(self):
         with tempfile.TemporaryDirectory() as tmp:

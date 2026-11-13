@@ -1,0 +1,9 @@
+[Unit]
+Description=Captain backup login sync every 10 minutes (the job itself decides whether anything is due)
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target

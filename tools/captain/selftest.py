@@ -6,6 +6,12 @@ Built-ins always run: the systemd user units in cfg selftest_units and the paths
 import json, os, subprocess, sys, tempfile, time, urllib.parse, urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import cfg
 
+def check_backup():
+    """Weekly dry run of the backup account path: read the remote login file, check the remote login, seed a throwaway config dir. Switches nothing."""
+    import captain as c
+    cc = c._backup_cfg()
+    if not cc: return True, "backup tier not configured"
+    b, src, _cd, _dirs, md, mj = c._backup_parts(cc); return b.dry_run(src, md, mj)
 CODEX_FIX = "run `codex login --device-auth`, open the link, sign in to ChatGPT"
 def out_path(): return os.environ.get("CAPTAIN_SELFTEST_OUT") or os.path.join(cfg.STORE, "captain-selftest.json")
 def _p(x): return cfg.resolve(x)
@@ -62,7 +68,7 @@ def make_check(spec):
     return name, run
 def build_checks():
     c = cfg.get()
-    return [make_check(s) for s in c["selftest_checks"]] + [("systemd units", check_units), ("required paths", check_required_paths)]
+    return [make_check(s) for s in c["selftest_checks"]] + [("systemd units", check_units), ("required paths", check_required_paths), ("backup account login (dry run)", check_backup)]
 def notify(text):
     """Post to the infra agent on the bus. Failure is reported, never raised."""
     try:

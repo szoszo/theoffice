@@ -46,6 +46,7 @@ DEFAULTS = {
     "infra_agent": None,                                        # who receives guard/selftest/regeneration alerts on the bus (default: the primary agent)
     "selftest_checks": [], "selftest_units": [],                # see selftest.py
     "skills_src": "~/.claude/skills", "skills_dst": "~/.codex/skills", "skill_routes": [],
+    "backup": {},                                               # optional backup Claude account tier, see README: {enabled, agents, config_dir, main_dir, main_json, ssh:{host, login, key, user, known_hosts, creds_path}}
     "handoff_file": None,                                       # default agents/<captain>/store/captain-handoff.md
 }
 _cfg = None

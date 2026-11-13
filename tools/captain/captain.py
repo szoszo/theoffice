@@ -122,28 +122,99 @@ def quota_signal(doc, now):
             when = datetime.datetime.fromtimestamp(w["resetsAtMs"] / 1000, tz()).strftime("%a %d %b %H:%M")
             return True, f"{label} usage window full (100%), resets {when}"
     return False, ""
+QUOTA_RESET_BELOW = 95   # margin: a 5h window that just reset next to a weekly window at 98% must not send the agents back and forth
+def quota_ok_signal(doc, now):
+    """True only for FRESH quota data with both windows below the limit (no data or stale data is not a reset)."""
+    snap = (doc or {}).get("snapshot") or {}
+    if not snap or now - (snap.get("fetchedAtMs") or 0) / 1000 > QUOTA_MAX_AGE: return False
+    ws = [snap.get(k) or {} for k in ("sevenDay", "fiveHour")]
+    return all(w.get("usedPercent") is not None and w["usedPercent"] < QUOTA_RESET_BELOW for w in ws)
+def modal_agents_from(panes):
+    """{agent id} whose tmux pane (session 'agent-<id>') shows the usage-limit modal."""
+    return {name[len("agent-"):] for name, txt in panes.items() if name.startswith("agent-") and usage_modal(txt)}
 def _quota():
     try: return quota_signal(json.load(open(QUOTA_JSON)), time.time())
     except Exception: return False, ""
+def _backup_active(st): return bool((st.get("backup") or {}).get("active"))
+def _back_to_main(d, st, now, tell):
+    """Backup agents back on the main account: one owner line, the sync/delete is the production hook."""
+    st["backup"] = dict(st.get("backup") or {}, active=False, ended=now); st["reset_streak"] = 0
+    ok = d["backup_off"]() is not False
+    if not ok: st["backup"]["active"] = True                       # a failed switch-back is retried on the next tick
+    elif tell: d["owner"](tell)
+    return ok
+def _backup_tick(d, st, now, h_ok, h_why):
+    """State 'backup': the primary agent runs on the backup account (the login re-sync is its own timer job, backup_sync_tick). Two checks with the backup pane at its limit, or a login/provider problem, mean the takeover; two clean main-quota readings mean back to main."""
+    b = st["backup"]
+    exhausted = bool(set(d["modal_agents"]()) & set(d["backup_agents"]()))   # lean mode: a modal on a PARKED agent is the main account, not the backup running out
+    st["backup_bad"] = st.get("backup_bad", 0) + 1 if exhausted else 0
+    st["login_bad"] = st.get("login_bad", 0) + 1 if not h_ok else 0
+    if st["backup_bad"] >= 2 or st["login_bad"] >= 2:
+        why = "main and backup accounts both at their limit" if st["backup_bad"] >= 2 else h_why
+        st.update(state="outage", since=now, reason=why, outage_since=now, backup_exhausted=st["backup_bad"] >= 2, reset="")
+        st["todo"] = {"act": "start", "tell": f":rotating_light: Claude is out ({'both Claude accounts are at their limit' if st['backup_exhausted'] else why}). {C()['captain_name']} is emergency captain."}
+    elif d["quota_ok"]():
+        st["reset_streak"] = st.get("reset_streak", 0) + 1
+        if st["reset_streak"] >= 2 and _back_to_main(d, st, now, "Main Claude account is back under its limit: restarted on the main account."): st.update(state="ok", since=now, reason="")
+    else: st["reset_streak"] = 0
+    return st
+def backup_sync_tick(d):
+    """Timer job (its own systemd timer, no agent): re-sync the backup login, but only while the backup is in use. 'synced' | 'not on backup'."""
+    st = load_state(d["state_path"])
+    if st["state"] == "backup" or (st["state"] == "outage" and _backup_active(st)):
+        try: d["backup_sync"]()
+        except Exception as e: print("backup sync failed:", e, file=sys.stderr)
+        return "synced"
+    if d.get("backup_cleanup"):   # a switch-back whose last push could not be confirmed keeps the local login; retry it here
+        r = d["backup_cleanup"]()
+        if r != "nothing pending": return r
+    return "not on backup"
 def detect_once(d):
     now = d["now"](); st = load_state(d["state_path"])
-    hint = ""; forced = os.path.exists(d["force_path"]) and open(d["force_path"]).read().strip() == "outage"; need = 2
+    hint = ""; forced = os.path.exists(d["force_path"]) and open(d["force_path"]).read().strip() == "outage"; need = 2; usage_only = False; h_ok, h_why = True, ""
+    bk = "backup_on" in d
     if forced: bad, reason = True, "forced drill"
     else:
         h_ok, h_why = d["health"](); n, hint = d["panes"](); s_bad, s_why = d["status"](); q_bad, q_why = d["quota"]() if d.get("quota") else (False, "")
         hard = (not h_ok) or n >= 2 or q_bad   # the limit is account-wide: two panes on the modal is hard evidence; one pane is a hint; the status page ALONE never counts (a status "partial outage" with the primary agent answering once ran a takeover for hours)
         dead = d["dead"](True) if (s_bad or n == 1) and not hard else False
         bad = hard or n == 1 or (s_bad and dead)
+        usage_only = h_ok and (n > 0 or q_bad)   # a usage limit and nothing else: a backup account can take it
         reason = (f"usage limit, {hint}" if hint else "usage limit") if n > 0 else ((h_why if not h_ok else "") or (q_why if q_bad else "") or s_why)
-        need = 2 if hard else (2 if (bad and dead) else 3)   # one pane: three checks, or two when the primary agent is also silent; the status page counts only together with a silent primary
+        need = 2 if hard else (2 if (bad and dead) else 3)   # one pane: three checks, or two when the primary agent is also silent; the status page counts only together with a silent primary agent
+    if bk and st["state"] == "backup" and not forced:
+        st = _backup_tick(d, st, now, h_ok, h_why)
+        save_state(st, d["state_path"])
+        todo = st.get("todo") or {}
+        if todo.get("act") and d[todo["act"]]() is not False: todo["act"] = None
+        if todo.get("tell") and d["owner"](todo["tell"]) is not False: todo["tell"] = None
+        st["todo"] = todo if (todo.get("act") or todo.get("tell")) else {}
+        save_state(st, d["state_path"]); return st, None
+    if bk and st["state"] == "outage" and _backup_active(st) and not forced:   # The captain has the con but the backup agents still sit on the backup login: a main reset moves them back
+        if d["quota_ok"](): st["reset_streak"] = st.get("reset_streak", 0) + 1
+        else: st["reset_streak"] = 0
+        if st["reset_streak"] >= 2: _back_to_main(d, st, now, None)
+    if forced and st["state"] == "backup": st["state"] = "ok"   # a drill while on backup: the takeover path runs, the backup stays flagged active so the recovery switches it back
     st, tr = decide(st, bad, reason, now, need)
-    if tr == "outage": st["outage_since"] = now; st["reset"] = hint; st["todo"] = {"act": "start", "tell": f":rotating_light: Claude is out ({st['reason']}). {C()['captain_name']} is emergency captain."}
+    went_backup = False
+    if tr == "outage" and bk and not forced and usage_only and not st.get("backup_exhausted") and d["backup_available"]():
+        # the whole switch is code, no agent: do it NOW and, if it fails or the agent is still on the limit screen after the restart, fall to the takeover in THIS tick
+        on_ok = d["backup_on"]() is not False
+        if on_ok and (d["backup_verify"]() if d.get("backup_verify") else True): went_backup = True
+        elif on_ok: d["backup_off"]()
+        if not went_backup: print("backup switch failed, falling to the takeover in the same tick", file=sys.stderr)
+    if went_backup:
+        st.update(state="backup", backup={"active": True, "since": now, "last_sync": now}, reset_streak=0, backup_bad=0, login_bad=0)
+        st["todo"] = {"tell": f"Main Claude usage is out ({reason}). Switched to the backup account; only {C()['primary_name']} runs on it, the rest wait for the main account."}
+        tr = "backup"
+    elif tr == "outage": st["outage_since"] = now; st["reset"] = hint; st["backup_exhausted"] = False; st["todo"] = {"act": "start", "tell": f":rotating_light: Claude is out ({st['reason']}). {C()['captain_name']} is emergency captain."}
     elif tr == "recovered":
         st, back = revert_all(st, now, d.get("agents_dir", AGENTS_DIR)); st["to_restart"] = back
         st["todo"] = {"act": "end", "tell": f"Claude is back. {C()['primary_name']} has the con again." + (f" Back on Claude: {', '.join(back)}." if back else "")}
+        if bk and _backup_active(st): _back_to_main(d, st, now, None); st["backup_exhausted"] = False
     save_state(st, d["state_path"]); todo = st.get("todo") or {}   # the start step reads reason / since / reset from the saved state
     if todo.get("act") and d[todo["act"]]() is not False: todo["act"] = None            # a failed start/end is retried on the next tick, not lost
-    if todo.get("tell") and d["owner"](todo["tell"]) is not False: todo["tell"] = None  # the owner line is sent exactly once, retried until the channel takes it
+    if todo.get("tell") and d["owner"](todo["tell"]) is not False: todo["tell"] = None  # the owner line is sent exactly once, retried until Slack takes it
     st["todo"] = todo if (todo.get("act") or todo.get("tell")) else {}
     # ONE usage line when the captain takes over, never hourly.
     if tr == "outage" and d.get("usage"):
@@ -470,6 +541,63 @@ def _panes():
 def _status():
     try: return status_bad(json.load(urllib.request.urlopen(urllib.request.Request("https://status.anthropic.com/api/v2/summary.json", headers={"User-Agent": "captain-detect"}), timeout=15)))
     except Exception: return False, ""
+def _backup_cfg():
+    """The `backup` key of config/captain.json: {enabled, agents[], config_dir, main_dir, main_json, ssh:{host, login, key, user, known_hosts, creds_path}}. Missing or not enabled = the backup tier does not exist."""
+    c = C().get("backup") or {}
+    return c if c.get("enabled") else None
+def _backup_parts(c):
+    import backup
+    rel = cfg.resolve; s = c["ssh"]
+    src = backup.SshSource(s["host"], s.get("login", "root"), rel(s["key"]), s["user"], s["creds_path"], known_hosts=rel(s["known_hosts"]) if s.get("known_hosts") else None)
+    return backup, src, rel(c.get("config_dir", f"{STORE}/claude-backup-cfg")), [f"{AGENTS_DIR}/{a}" for a in c["agents"]], rel(c.get("main_dir", "~/.claude")), rel(c.get("main_json", "~/.claude.json"))
+PERIODS = f"{STORE}/backup-periods.jsonl"
+def _period(event, agents):
+    """Usage reporting (spec item 4): every switch is logged so a period that ran on the BACKUP account is never mixed into the main account's weekly %. One JSON line per switch: {at, event: backup-on|backup-off, agents, account}."""
+    try:
+        with open(PERIODS, "a") as f: f.write(json.dumps({"at": int(time.time()), "event": event, "agents": list(agents), "account": "backup" if event == "backup-on" else "main"}) + "\n")
+    except Exception as e: print("backup period log failed:", e, file=sys.stderr)
+def _restart(agents):
+    for a in agents:
+        try: _api("POST", f"/api/agents/{a}/restart", {})
+        except Exception as e: print("restart failed:", a, e, file=sys.stderr)
+def _backup_deps():
+    """The detector's backup hooks, or {} when no backup is configured."""
+    c = _backup_cfg()
+    if not c: return {}
+    def available():
+        try: _, src, *_ = _backup_parts(c); return src.status()[0]
+        except Exception as e: print("backup not available:", e, file=sys.stderr); return False
+    def on():
+        try: b, src, cd, dirs, md, mj = _backup_parts(c); b.switch_on(src, cd, dirs, md, mj); _restart(c["agents"]); _period("backup-on", c["agents"]); return True
+        except Exception as e: print("backup on failed:", e, file=sys.stderr); return False
+    def off():
+        try:
+            b, src, cd, dirs, md, mj = _backup_parts(c); r = b.switch_off(src, cd, dirs); _restart(c["agents"]); _period("backup-off", c["agents"])
+            if r == "pending": print("backup switch-back: login push not confirmed, local copy kept for the retry", file=sys.stderr)
+            return True
+        except Exception as e: print("backup off failed:", e, file=sys.stderr); return False
+    def sync():
+        b, src, cd, *_ = _backup_parts(c); act = b.sync(src, os.path.join(cd, ".credentials.json")); ok, why = src.status()
+        if not ok or act == "remote-unreadable":
+            try: _api("POST", "/api/messages", {"from": C()["infra_agent"], "to": C()["infra_agent"], "content": f"captain backup sync: {act}, login check: {why}. The backup login may need attention."[:300]})
+            except Exception: pass
+    def verify():
+        time.sleep(30)   # the restarted agent needs a moment to draw its screen; still on the limit modal after that = the backup does not work
+        return not (modal_agents() & set(c["agents"]))
+    def modal_agents():
+        try:
+            sock = C()["tmux_socket"]; out = {}
+            for sess in subprocess.run(["tmux", "-L", sock, "list-sessions", "-F", "#S"], capture_output=True, text=True, timeout=10).stdout.split():
+                if sess.startswith(C()["agent_session_prefix"]): out[sess] = subprocess.run(["tmux", "-L", sock, "capture-pane", "-p", "-t", sess], capture_output=True, text=True, timeout=10).stdout
+            return modal_agents_from(out)
+        except Exception: return set()
+    def cleanup():
+        try: _, src, cd, dirs, *_ = _backup_parts(c); return __import__("backup").retry_cleanup(src, cd, dirs)
+        except Exception: return "pending"
+    def quota_ok():
+        try: return quota_ok_signal(json.load(open(QUOTA_JSON)), time.time())
+        except Exception: return False
+    return dict(backup_available=available, backup_on=on, backup_off=off, backup_sync=sync, backup_verify=verify, backup_cleanup=cleanup, modal_agents=modal_agents, quota_ok=quota_ok, backup_agents=lambda: list(c["agents"]))
 def _owner(text):
     try: _api("POST", "/api/outbound", {"agent": P(), "channel": owner_channel(), "text": text}); return True
     except Exception as e: print("owner line failed:", e, file=sys.stderr); return False
@@ -521,10 +649,19 @@ def main():
     elif cmd == "unswitch":
         try: unswitch_agent(sys.argv[2]); print("back on Claude:", sys.argv[2])
         except ValueError as e: print("REFUSED:", e); return 1
+    elif cmd == "backup-sync":   # its own timer (every 30 min): a no-op unless the backup is in use
+        print(backup_sync_tick(dict(state_path=STATE, **_backup_deps())) if _backup_cfg() else "backup tier not configured")
+    elif cmd in ("backup-on", "backup-off"):   # drill: move the named agents (default: the configured ones) to/from the backup account by hand, state file untouched
+        cc = _backup_cfg()
+        if not cc: print("backup tier not configured (the `backup` key of config/captain.json)"); return 1
+        b, src, cd, dirs, md, mj = _backup_parts(cc); names = sys.argv[2:] or cc["agents"]; dirs = [f"{AGENTS_DIR}/{a}" for a in names]
+        if cmd == "backup-on": b.switch_on(src, cd, dirs, md, mj)
+        else: b.switch_off(src, cd, dirs)
+        _restart(names); _period(cmd, names); print(cmd, "done for", ", ".join(names), "| vps login:", src.status()[1])
     elif cmd == "prefix": _prefix_cli()
     elif cmd == "detect":
       with state_lock():
-        detect_once(dict(state_path=STATE, force_path=FORCE, now=time.time, health=_health, panes=_panes, status=_status, dead=lambda degraded: degraded and dead_primary(DB, time.time()), owner=_owner, start=_start, end=_end, quota=_quota, usage=lambda: usage_line(latest_rate_limits())))
+        detect_once(dict(state_path=STATE, force_path=FORCE, now=time.time, health=_health, panes=_panes, status=_status, dead=lambda degraded: degraded and dead_primary(DB, time.time()), owner=_owner, start=_start, end=_end, quota=_quota, usage=lambda: usage_line(latest_rate_limits()), **_backup_deps()))
     elif cmd == "route":
         while True:
             try: route_once(DB, STATE, owner_user())
