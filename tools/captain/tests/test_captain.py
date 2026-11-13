@@ -528,6 +528,13 @@ class RouterAliveGuard(Base):
             self.assertEqual(cp.route_once(db, sp, "U0OWNER"), 0)
             c.execute("UPDATE outbound_queue SET created_at=?", (time.time() - 3600,)); c.commit(); c.close()
             self.assertEqual(cp.route_once(db, sp, "U0OWNER"), 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self.mkdb(tmp); sp = os.path.join(tmp, "outage.json"); st = cp.new_state(); st.update(state="outage", reason="usage limit"); cp.save_state(st, sp)
+            c = sqlite3.connect(db); c.execute("CREATE TABLE IF NOT EXISTS outbound_queue(id INTEGER PRIMARY KEY, agent_id TEXT, channel TEXT, text TEXT, status TEXT, created_at)")
+            for t in (":rotating_light: Claude is out (usage limit). Captain is emergency captain.", "Claude is back. Main has the con again.", ":rotating_light: Emergency captain (Captain): OpenAI: weekly 80% used."):
+                c.execute("INSERT INTO outbound_queue(agent_id, channel, text, status, created_at) VALUES('main','D0MAIN',?,'sent',?)", (t, time.time() - 10))   # the captain code posts ITS owner lines as the primary agent
+            c.commit(); c.close()
+            self.assertEqual(cp.route_once(db, sp, "U0OWNER"), 2)                                   # those are not the primary agent answering
 
 class HandoffStub(Base):
     def test_a_handoff_older_than_the_outage_is_replaced_by_a_marked_stub_and_a_fresh_one_is_kept(self):

@@ -202,7 +202,7 @@ def primary_alive(db, now=None, window=300):
     now = time.time() if now is None else now
     try:
         c = sqlite3.connect(db, timeout=10)
-        try: r = c.execute("SELECT created_at FROM outbound_queue WHERE agent_id=? ORDER BY id DESC LIMIT 1", (P(),)).fetchone()
+        try: r = c.execute("SELECT created_at FROM outbound_queue WHERE agent_id=? AND text NOT LIKE ':rotating_light:%' AND text NOT LIKE 'Claude is back%' ORDER BY id DESC LIMIT 1", (P(),)).fetchone()   # the captain code posts its own owner lines as the primary agent: those are not it answering
         finally: c.close()
     except Exception: return False
     if not r or not r[0]: return False
