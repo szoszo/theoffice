@@ -1,0 +1,9 @@
+[Unit]
+Description=Emergency captain: skills sync every 30 min
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=30min
+
+[Install]
+WantedBy=timers.target

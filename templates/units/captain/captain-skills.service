@@ -1,0 +1,7 @@
+[Unit]
+Description=Emergency captain: sync the primary agent's skills into the captain's Codex skills (no AI)
+
+[Service]
+Environment=OFFICE_TENANT_ROOT=@TENANT@
+Type=oneshot
+ExecStart=/usr/bin/python3 @ROOT@/tools/captain/skills_sync.py

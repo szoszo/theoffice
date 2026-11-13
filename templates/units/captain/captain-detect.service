@@ -1,0 +1,10 @@
+[Unit]
+Description=Emergency captain: is Claude out? Zero-token signals only (health + pane scan + status page + quota), no AI call -> store/outage.json
+
+[Service]
+Environment=TZ=@TZ@
+Environment=OFFICE_TENANT_ROOT=@TENANT@
+Type=oneshot
+ExecStart=/usr/bin/python3 @ROOT@/tools/captain/captain.py detect
+MemoryMax=150M
+Nice=10

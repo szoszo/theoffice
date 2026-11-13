@@ -12,3 +12,4 @@ Install: copy the `.service`/`.timer` files to `~/.config/systemd/user/`, then
 - `disk-watch`: free-space watcher (warn under 25% free, critical under 12%, or absolute GB; hysteresis; never deletes); alerts the relay agent over the bus
 - `office-data-backup`: nightly encrypted backup (config via `<tenant>/backup.env`: `BACKUP_DRIVE_TOKEN`, optional `BACKUP_APP_DATA`, `BACKUP_D1_DATABASE`)
 - `office-embed-backfill`, `modal-sweeper`, `oomwatch`: memory embedding, usage-limit modal sweeper, OOM detector
+- `captain/` (opt-in, NOT installed by default): the emergency-captain units (detector, router, selftest, skills sync, guard). See `tools/captain/README.md` for the config and install steps.

@@ -1,0 +1,31 @@
+{
+  "primary_agent": "main",
+  "primary_name": "Main",
+  "captain_agent": "captain",
+  "captain_name": "Captain",
+  "covered_agents": ["alpha", "beta"],
+  "skip_tasks": [],
+  "rule_heads": ["EMAIL: DRAFT ONLY, NEVER SEND"],
+  "fleet_rule_heads": [],
+  "priority": "the morning briefing, your direct asks, today's calendar, urgent mail",
+  "briefing_task": "scheduled-tasks/morning-briefing/task-config.json",
+  "briefing_item": "the morning briefing",
+  "fleet_cover_file": "config/captain-fleet-cover.txt",
+  "gap_text_file": "config/captain-gaps.txt",
+  "gaps": [["Calendar connector", "claude.ai connector only"]],
+  "resolved_by": {},
+  "retired": [],
+  "required_paths": [],
+  "local_mcps": {},
+  "oauth_mcps": {},
+  "gen_agents_md_cmd": null,
+  "tools_repo": null,
+  "infra_agent": "main",
+  "selftest_units": ["theoffice.service", "captain-router.service", "captain-detect.timer"],
+  "selftest_checks": [
+    {"type": "codex_ping", "name": "codex login"},
+    {"type": "file", "name": "fleet routes present", "paths": ["agents/alpha/CLAUDE.md"]}
+  ],
+  "skill_routes": [],
+  "max_switched": 2
+}

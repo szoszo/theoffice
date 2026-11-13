@@ -1,0 +1,9 @@
+[Unit]
+Description=Captain selftest weekly (Monday 07:30)
+
+[Timer]
+OnCalendar=Mon *-*-* 07:30:00 @TZ@
+Persistent=true
+
+[Install]
+WantedBy=timers.target

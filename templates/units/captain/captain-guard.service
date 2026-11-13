@@ -1,0 +1,7 @@
+[Unit]
+Description=Emergency captain: alert the infra agent only if tools/captain differs from its last commit (no AI, no tokens)
+
+[Service]
+Environment=OFFICE_TENANT_ROOT=@TENANT@
+Type=oneshot
+ExecStart=/usr/bin/python3 @ROOT@/tools/captain/captain.py guard

@@ -1,0 +1,9 @@
+[Unit]
+Description=Emergency captain guard, nightly
+
+[Timer]
+OnCalendar=*-*-* 03:10:00 @TZ@
+Persistent=true
+
+[Install]
+WantedBy=timers.target

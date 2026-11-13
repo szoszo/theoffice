@@ -1,0 +1,10 @@
+[Unit]
+Description=Captain selftest: one harmless read per configured Claude-independent tool path (OK/FAIL), results in store/captain-selftest.json
+
+[Service]
+Environment=TZ=@TZ@
+Environment=OFFICE_TENANT_ROOT=@TENANT@
+Type=oneshot
+ExecStart=/usr/bin/python3 @ROOT@/tools/captain/captain.py selftest
+MemoryMax=150M
+Nice=10

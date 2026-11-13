@@ -1,0 +1,15 @@
+[Unit]
+Description=Emergency captain router: during an OUTAGE re-address the owner's DMs and the primary agent's scheduled tasks to the captain (idle otherwise)
+After=network.target
+
+[Service]
+Environment=TZ=@TZ@
+Environment=OFFICE_TENANT_ROOT=@TENANT@
+ExecStart=/usr/bin/python3 @ROOT@/tools/captain/captain.py route
+Restart=on-failure
+RestartSec=10
+MemoryMax=80M
+Nice=10
+
+[Install]
+WantedBy=default.target
