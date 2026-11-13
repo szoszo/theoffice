@@ -30,7 +30,7 @@ def build(start, end, db=None, sessions=None, switches=None):
     inbound = q("select created_at, source, coalesce(reply_user,''), prompt from inbound_queue where agent_id=? and created_at between ? and ? order by id", cap, start, end)
     outbound = q("select created_at, channel, status, text from outbound_queue where agent_id=? and created_at between ? and ? order by id", cap, start, end)
     owner_lines = q("select created_at, channel, text from outbound_queue where agent_id=? and (text like ':rotating_light:%' or text like 'Claude is back%') and created_at between ? and ? order by id", prim, start, end)
-    try: skipped = q("select created_at, agent_id, dedup_key from inbound_queue where last_error like 'skipped (captain%' and created_at between ? and ? order by id", start, end)
+    try: skipped = q("select created_at, agent_id, source, dedup_key, last_error from inbound_queue where last_error like 'skipped (captain%' and created_at between ? and ? order by id", start, end)
     except sqlite3.OperationalError: skipped = []
     bus = q("select created_at, from_agent, to_agent, content from agent_messages where (from_agent=? or to_agent=?) and created_at between ? and ? order by id", cap, cap, start, end)
     ev = rollout_events(start, end, sessions)
@@ -45,7 +45,10 @@ def build(start, end, db=None, sessions=None, switches=None):
     L += [f"- {hm(t)} [{s}{'/' + u if u else ''}] {p}" for t, s, u, p in inbound] or ["- none"]
     L += ["", f"## Outbound from {capn} (verbatim)"] + ([f"- {hm(t)} [{ch}, {st}] {tx}" for t, ch, st, tx in outbound] or ["- none"])
     L += ["", "## Owner lines sent by the captain code (switches, agent switches, hourly usage; the recovery line follows this log)"] + ([f"- {hm(t)} [{ch}] {tx}" for t, ch, tx in owner_lines] or ["- none"])
-    L += ["", f"## Scheduled tasks skipped by the captain (outage skip list, never given to {capn})"] + ([f"- {hm(t)} {a}: {k.split(':')[1] if k and ':' in k else k}" for t, a, k in skipped] or ["- none"])
+    def skip_line(t, a, src, k, why):
+        what = f"task {k.split(':')[1]}" if src == "scheduler" and k and ":" in k else f"[{src}] {k}"
+        return f"- {hm(t)} {a}: {what} ({(why or '').replace('skipped (captain', '').rstrip(')').lstrip(': ') or 'skipped'})"
+    L += ["", f"## Rows skipped by the captain (scheduled tasks on the skip list, duplicates of a row {capn} already had; never given to {capn})"] + ([skip_line(*x) for x in skipped] or ["- none"])
     L += ["", f"## Bus ({capn} in and out)"] + ([f"- {hm(t)} {a} -> {b}: {x}" for t, a, b, x in bus] or ["- none"])
     L += ["", "## Runtime switches (agents moved to Codex by the captain)"] + ([f"- {hm(x['at'])} {x['agent']} to Codex because: {x['reason']}; back on Claude {hm(x['back_at']) if x.get('back_at') else 'NOT YET'}" for x in switches or []] or ["- none"])
     L += ["", "## Drafts and sends (from its tool commands)"] + ([f"- {hm(t)} {str(i)[:1500]}" for t, n, i in drafts] or ["- none"])

@@ -58,7 +58,15 @@ class OutageLog(unittest.TestCase):
         c = sqlite3.connect(db); c.execute("ALTER TABLE inbound_queue ADD COLUMN dedup_key"); c.execute("ALTER TABLE inbound_queue ADD COLUMN last_error")
         c.execute("insert into inbound_queue(agent_id,source,prompt,status,created_at,dedup_key,last_error) values('main','scheduler','[Scheduled task: daily-report] run','failed',1200,'sched:daily-report:9','skipped (captain outage skip list)')"); c.commit(); c.close()
         md = cl.build(1000, 6000, db, sess)
-        self.assertIn("Scheduled tasks skipped", md); self.assertIn("daily-report", md)
+        self.assertIn("Rows skipped by the captain", md); self.assertIn("daily-report", md)
+    def test_a_skipped_duplicate_owner_message_is_not_labelled_a_scheduled_task(self):
+        """An owner DM the captain already had was once logged as a skipped scheduled task. The log now says what the row was and why."""
+        import captain_log as cl, captain as cp
+        d, db, sess = self._env()
+        c = sqlite3.connect(db); c.execute("ALTER TABLE inbound_queue ADD COLUMN dedup_key"); c.execute("ALTER TABLE inbound_queue ADD COLUMN last_error")
+        c.execute("insert into inbound_queue(agent_id,source,prompt,status,created_at,dedup_key,last_error) values('main','channel','[DM] screenshot','failed',1300,'1794582489.701259',?)", (cp.DUP_MARK,)); c.commit(); c.close()
+        md = cl.build(1000, 6000, db, sess); sec = md.split("## Rows skipped by the captain")[1].split("## Bus")[0]
+        self.assertIn("[channel]", sec); self.assertIn("already has this task", sec)
     def test_draft_marks_are_generic_plus_configured(self):
         import captain_log as cl
         d, db, sess = self._env()
