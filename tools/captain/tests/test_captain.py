@@ -41,8 +41,9 @@ class Decide(Base):
         st, tr = cp.decide(st, True, "usage limit", 400); self.assertEqual(tr, "outage"); self.assertEqual((st["state"], st["reason"], st["since"]), ("outage", "usage limit", 400))
         st, tr = cp.decide(st, True, "usage limit", 700); self.assertIsNone(tr)                    # still out: no second announcement
         st, tr = cp.decide(st, False, "", 1000); self.assertIsNone(tr); self.assertEqual(st["state"], "outage")
-        st, tr = cp.decide(st, False, "", 1300); self.assertIsNone(tr); self.assertEqual(st["state"], "outage")        # two clear checks but inside the 30 minute dwell
-        st, tr = cp.decide(st, False, "", 2300); self.assertEqual(tr, "recovered"); self.assertEqual(st["state"], "ok")
+        st, tr = cp.decide(st, False, "", 1300); self.assertEqual(tr, "recovered"); self.assertEqual(st["state"], "ok")          # two clear checks end it AT ONCE: no 30 minute hold once the cause has cleared
+        st, tr = cp.decide(st, True, "usage limit", 1400); st, tr = cp.decide(st, True, "usage limit", 1700); self.assertIsNone(tr); self.assertEqual(st["state"], "ok")   # a NEW outage still waits out the dwell: no flapping
+        st, tr = cp.decide(st, True, "usage limit", 3200); self.assertEqual(tr, "outage")
     def test_a_single_blip_changes_nothing(self):
         st = cp.new_state(); st, _ = cp.decide(st, True, "timeout", 1); st, tr = cp.decide(st, False, "", 2); st, tr2 = cp.decide(st, True, "timeout", 3)
         self.assertEqual((tr, tr2, st["state"]), (None, None, "ok"))
@@ -371,8 +372,8 @@ class Detect(Base):
             self.assertEqual(json.load(open(d["state_path"]))["state"], "outage")
             self.t += 300; cp.detect_once(d); self.assertEqual(len(self.sent), 1)                  # exactly one line per switch
             d = self.deps(tmp); self.sent = []; self.log = []                                       # all clear again
-            self.t += 300; cp.detect_once(d); self.t += 300; cp.detect_once(d); self.assertEqual(self.sent, [])   # clear twice, but the 30 minute dwell is not over: stay captain
-            self.t += 1500; cp.detect_once(d)
+            self.t += 300; cp.detect_once(d); self.assertEqual(self.sent, [])                          # one clear check is not enough
+            self.t += 300; cp.detect_once(d)                                                           # the second clear check ends it at once
             self.assertEqual(len(self.sent), 1); self.assertIn("Claude is back", self.sent[0]); self.assertIn("Main has the con again", self.sent[0]); self.assertEqual(self.log, ["end"]); self.assertEqual(json.load(open(d["state_path"]))["state"], "ok")
     def test_login_problem_counts_after_two_checks_but_the_status_page_alone_never_does(self):
         """A status-page 'partial outage' while the primary agent answers once ran a takeover for hours. Status alone is a hint, never a trigger."""

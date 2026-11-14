@@ -42,14 +42,14 @@ def save_state(st, path=None):
     path = path or STATE; tmp = path + ".tmp"; json.dump(st, open(tmp, "w")); os.chmod(tmp, 0o644); os.replace(tmp, path)
 
 def decide(st, bad, reason, now, need=2, dwell=1800):
-    """Two bad (three for a status-page-only signal) in a row = OUTAGE, two clear = RECOVERY, and never a second switch within 30 minutes of the last one (a flapping signal must not spam the owner)."""
+    """Two bad (three for a status-page-only signal) in a row = OUTAGE, two clear = RECOVERY at once; a new outage cannot start within 30 minutes of the last switch (a flapping signal must not spam the owner)."""
     st = dict(st); st["last_probe"] = now; tr = None; settled = (now - st["since"]) >= dwell if st["since"] else True
     if bad:
         st["bad_streak"] += 1; st["good_streak"] = 0
         if st["state"] == "ok" and st["bad_streak"] >= need and settled: st.update(state="outage", since=now, reason=reason); tr = "outage"
     else:
         st["good_streak"] += 1; st["bad_streak"] = 0
-        if st["state"] == "outage" and st["good_streak"] >= 2 and settled: st.update(state="ok", since=now, reason=""); tr = "recovered"
+        if st["state"] == "outage" and st["good_streak"] >= 2: st.update(state="ok", since=now, reason=""); tr = "recovered"   # no dwell on the way back: once the cause has cleared the captain stands down
     return st, tr
 
 STOP = re.compile(r"\d\.\s*Stop and wait for limit to reset", re.I)
