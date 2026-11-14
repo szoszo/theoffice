@@ -343,6 +343,13 @@ class Signals(Base):
         self.assertEqual(cp.status_bad(mk("Claude API (api.anthropic.com)", "partial_outage"))[0], True)
         for name in ("claude.ai", "Claude Cowork", "Claude Console (platform.claude.com)", "Claude for Government", "console.anthropic.com"): self.assertEqual(cp.status_bad(mk(name, "major_outage")), (False, ""), name)
         self.assertEqual(cp.status_bad(mk("Claude Code", "degraded_performance")), (False, "")); self.assertEqual(cp.status_bad({}), (False, ""))
+    def test_an_expired_access_token_with_a_valid_refresh_token_is_not_an_outage(self):
+        """2026-11-14 04:25-04:55: the access token (8 h life) expired at night, the refresh token was fine, and the next API use refreshed it at 04:35. The takeover started for nothing."""
+        ok = {"status": "x", "credential": {"expired": True, "hasRefreshToken": True, "refreshExpired": False}, "agents": []}
+        self.assertEqual(cp.health_verdict(ok), (True, ""))
+        self.assertEqual(cp.health_verdict({"status": "x", "credential": {"expired": True, "hasRefreshToken": True, "refreshExpired": True}, "agents": []}), (False, "refresh token expired"))
+        self.assertEqual(cp.health_verdict({"status": "x", "credential": {"expired": True, "hasRefreshToken": False}, "agents": []}), (False, "credential expired"))
+        self.assertEqual(cp.health_verdict({"status": "x", "credential": {"expired": True}, "agents": []}), (False, "credential expired"))        # unknown refresh state: still a hard fail
     def test_health_ignores_one_signed_out_agent_but_not_an_expired_credential_or_a_majority(self):
         ag = lambda *so: [{"id": str(i), "signedOut": x} for i, x in enumerate(so)]
         self.assertEqual(cp.health_verdict({"status": "degraded", "credential": {"expired": False}, "agents": ag(True, False, False, False)}), (True, ""))

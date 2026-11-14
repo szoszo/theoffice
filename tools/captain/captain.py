@@ -73,10 +73,10 @@ def status_bad(summary):
         if (nm == "claude code" or nm.startswith("claude api")) and c.get("status") in ("major_outage", "partial_outage"): return True, f"Anthropic status: {c['name']} {c['status'].replace('_', ' ')}"
     return False, ""
 def health_verdict(d):
-    """An expired credential, an expired refresh token, or MOST agents signed out. One signed-out agent (a stale pane) is not an outage."""
+    """An expired refresh token (or an expired access token with no refresh token), or MOST agents signed out. An expired access token alone refreshes itself. One signed-out agent (a stale pane) is not an outage."""
     cred = d.get("credential") or {}
-    if cred.get("expired"): return False, "credential expired"
     if cred.get("refreshExpired"): return False, "refresh token expired"
+    if cred.get("expired") and not (cred.get("hasRefreshToken") is True): return False, "credential expired"   # an expired ACCESS token with a valid refresh token heals itself on the next API use; unknown refresh state stays a hard fail
     ag = d.get("agents") or []
     if ag and sum(1 for a in ag if a.get("signedOut")) * 2 > len(ag): return False, "most agents are signed out"
     return True, ""
